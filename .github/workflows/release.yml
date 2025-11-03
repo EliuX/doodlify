@@ -1,20 +1,21 @@
-name: Doodlify CD (Build & Latest Release)
+name: Release Doodlify
+
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:  # Allow manual triggering
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
 
 jobs:
-  doodlify:
+  build-and-release:
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: write
+      packages: write
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Fetch all history for proper git operations
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -23,7 +24,7 @@ jobs:
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
-          pip install build
+          pip install build twine
 
       - name: Build package (sdist + wheel)
         run: |
@@ -32,19 +33,16 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: doodlify-dist-latest
+          name: doodlify-dist
           path: dist/*
 
-      - name: Create/Update 'latest' GitHub Release
+      - name: Create GitHub Release
+        id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: Latest
-          make_latest: true
           files: |
             dist/*.whl
             dist/*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
 

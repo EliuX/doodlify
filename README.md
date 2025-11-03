@@ -1,4 +1,4 @@
-🎨 Doodlify
+Doodlify 🎨
 ===============
 
 Automated Event-Based Frontend Customization Tool - Transform your website for special events using AI.
@@ -9,6 +9,7 @@ Doodlify is a Python CLI tool that automatically adapts frontend projects for sp
 
 - 🤖 **AI-Powered Transformations**: Uses OpenAI's GPT and image editing models to intelligently adapt content
 - 🎯 **Smart Analysis**: Automatically identifies files and elements to customize using AI-powered code analysis
+- 🧠 **Improvement Suggestions**: During analyze, detects repo improvements that boost event quality and auto-creates GitHub issues (deduplicated)
 - 🌳 **Git Integration**: Creates separate branches for each event with proper version control
 - 🔄 **GitHub Actions Ready**: Easily automate with CI/CD pipelines
 - 📝 **i18n Support**: Adapts internationalization files to match event themes
@@ -146,6 +147,12 @@ doodlify analyze
 - Performs AI-powered codebase analysis
 - Identifies files of interest for modification
 - Caches analysis results
+- Creates GitHub issues with improvement suggestions (only once per suggestion; tracked in `config-lock.json`)
+
+#### Improvement suggestions
+- Source: Heuristics (missing i18n files, missing image assets, missing selectors) and AI considerations
+- Tracking: Stored in `config-lock.json` under `reported_suggestions` with a fingerprint to avoid duplicates
+- Permissions: Requires Personal Access Token with `Issues: Read and write`
 
 ### 2. Process Phase
 ```bash
@@ -175,6 +182,7 @@ Uses OpenAI to:
 - Find i18n/localization files
 - Extract CSS selectors
 - Provide intelligent recommendations
+- Produce improvement suggestions for event readiness (e.g., add i18n files, ensure hero images, add selectors)
 
 ### Image Agent
 Uses OpenAI's image editing API to:
@@ -210,6 +218,7 @@ doodlify/
 │   └── workflows/
 │       └── doodlify.yml       # GitHub Actions workflow
 ├── config.json                # Your configuration
+├── event.manifest.json        # Optional: repo-level overrides (lives in target repo)
 ├── config-lock.json          # State tracking (auto-generated)
 ├── .env                       # Environment variables
 ├── requirements.txt
@@ -228,13 +237,77 @@ To enable:
 2. Add secrets to your repository:
    - `GITHUB_PERSONAL_ACCESS_TOKEN`
    - `OPENAI_API_KEY`
-3. Optionally set `GIT_BRANCH_CHANGES_TARGET` variable
+3. Ensure the token has repository permissions: `Contents: Read/Write`, `Pull requests: Read/Write` and `Issues: Read/Write`
 
 The workflow:
 - Runs daily at 9 AM UTC
 - Can be triggered manually
 - Commits `config-lock.json` to track state
 - Prevents duplicate processing
+
+## 📦 Distributing and Consuming Doodlify
+
+This repository ships build artifacts so client/target projects can adopt the tool without copying code.
+
+Artifacts (when a tag `vX.Y.Z` is pushed):
+- GitHub Release: `dist/*.whl` and `dist/*.tar.gz`
+- GHCR Docker image: `ghcr.io/<org>/doodlify:latest` and `ghcr.io/<org>/doodlify:vX.Y.Z`
+- Optional PyPI publish if credentials are configured
+
+### Client CI: Install from PyPI (preferred if published)
+```yaml
+jobs:
+  doodlify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          python -m pip install --upgrade pip
+          pip install doodlify
+      - run: |
+          doodlify analyze --config event.manifest.json
+          doodlify process --config event.manifest.json
+          doodlify push --config event.manifest.json
+        env:
+          GITHUB_PERSONAL_ACCESS_TOKEN: ${{ secrets.GITHUB_PERSONAL_ACCESS_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_REPO_NAME: ${{ github.repository }}
+```
+
+### Client CI: Install from GitHub Release
+```yaml
+    - name: Download wheel from latest release
+      uses: robinraju/release-downloader@v1.10
+      with:
+        repository: <org>/<repo>
+        latest: true
+        fileName: "*.whl"
+    - name: Install doodlify from wheel
+      run: |
+        python -m pip install --upgrade pip
+        pip install ./*.whl
+```
+
+### Client CI: Run via Docker (GHCR)
+```yaml
+    - name: Run doodlify via Docker
+      run: |
+        docker run --rm \
+          -e GITHUB_PERSONAL_ACCESS_TOKEN=${{ secrets.GITHUB_PERSONAL_ACCESS_TOKEN }} \
+          -e OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }} \
+          -e GITHUB_REPO_NAME=${{ github.repository }} \
+          -v ${{ github.workspace }}:/work \
+          -w /work \
+          ghcr.io/<org>/doodlify:latest \
+          doodlify run --config event.manifest.json
+```
+
+Notes:
+- Client repos should own `event.manifest.json` at the repo root. The tool reads it after clone to override `project/defaults/events`.
+- Lock files are written under `.doodlify-workspace/<repo>/` and should not be committed. Upload as artifacts if needed.
 
 ## 📊 State Management
 
@@ -245,6 +318,13 @@ Doodlify uses `config-lock.json` to track:
 - Modified files
 - Commit SHAs
 - Errors and timestamps
+- Reported improvement suggestions (title, fingerprint, issue number)
+
+Lock filename note:
+- The lock file name is derived from the config file name you pass to the CLI.
+- Examples:
+  - `--config config.json` → `config-lock.json`
+  - `--config event.manifest.json` → `event.manifest-lock.json`
 
 This prevents duplicate work in CI/CD environments.
 
@@ -278,6 +358,32 @@ doodlify clear --event-id halloween-2024
 # Clear all
 doodlify clear
 ```
+
+## 🧩 Optional Repo Manifest (event.manifest.json)
+
+You can place an `event.manifest.json` file in the target repository (at the repo root) to override parts of your configuration after cloning. This is useful when the target repo wants to customize selectors, defaults, or events without editing the automation project.
+
+Precedence (highest last):
+- `config.json` (passed to the CLI)
+- `event.manifest.json` (in the target repo) overrides `project`, `defaults`, and `events`
+
+Example `event.manifest.json` in the target repo:
+```json
+{
+  "defaults": {
+    "selector": "img.hero, [data-event-adaptable]",
+    "branchPrefix": "feature/event/"
+  },
+  "project": {
+    "targetBranch": "main"
+  }
+}
+```
+
+Notes:
+- Manifest is optional. If present, it is applied after cloning and before analysis.
+- Only the top-level keys `project`, `defaults`, and `events` are considered.
+- The manifest is intended as a consumer-owned override; your automation repo still keeps a boilerplate `config.example.json`.
 
 ## 🐛 Troubleshooting
 

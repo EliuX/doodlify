@@ -3,6 +3,8 @@ Main orchestrator for the Doodlify workflow.
 """
 
 import os
+import asyncio
+import hashlib
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
@@ -79,6 +81,26 @@ class Orchestrator:
             repo_path = self.git_agent.clone_or_update(base_branch)
             print(f"✓ Repository cloned/updated at: {repo_path}")
             
+            # Ensure the lock file is written inside the workspace repo directory
+            # Keep the derived filename (e.g., config-lock.json or event.manifest-lock.json)
+            try:
+                derived_lock_name = self.config_manager.lock_path.name
+                self.config_manager.lock_path = Path(repo_path) / derived_lock_name
+            except Exception:
+                pass
+            
+            # Optional: load repo-level manifest (event.manifest.json) to override config
+            manifest_path = Path(repo_path) / "event.manifest.json"
+            if manifest_path.exists():
+                try:
+                    with open(manifest_path, "r", encoding="utf-8") as mf:
+                        overrides = json.load(mf)
+                    self.config_manager.apply_overrides(overrides)
+                    config = self.config_manager.config
+                    print("✓ Applied repo manifest overrides from event.manifest.json")
+                except Exception as me:
+                    print(f"! Skipped manifest overrides due to error: {me}")
+            
             # Perform global analysis if not already done
             lock = self.config_manager.load_lock()
             if not lock.global_analysis:
@@ -96,6 +118,16 @@ class Orchestrator:
                 print(f"  ✓ Found {len(analysis.image_files)} image files")
                 print(f"  ✓ Found {len(analysis.text_files)} text/i18n files")
                 print(f"  ✓ Identified {len(analysis.files_of_interest)} files of interest")
+
+                # Report improvement suggestions as GitHub issues (avoid duplicates)
+                if analysis.improvement_suggestions:
+                    print(f"\n📝 Reporting {len(analysis.improvement_suggestions)} improvement suggestion(s) to GitHub issues (deduped)...")
+                    try:
+                        asyncio.run(self._report_suggestions(analysis.improvement_suggestions))
+                    except RuntimeError:
+                        # If already inside an event loop (unlikely here), create a new task
+                        loop = asyncio.get_event_loop()
+                        loop.run_until_complete(self._report_suggestions(analysis.improvement_suggestions))
             else:
                 print("✓ Using cached global analysis")
             
@@ -114,6 +146,52 @@ class Orchestrator:
             import traceback
             traceback.print_exc()
             return False
+
+    def _fingerprint(self, title: str, body: str) -> str:
+        data = (title.strip() + "\n" + body.strip()).encode("utf-8")
+        return hashlib.sha256(data).hexdigest()
+
+    async def _report_suggestions(self, suggestions: List[dict]) -> None:
+        """Create GitHub issues for suggestions if not already reported."""
+        lock = self.config_manager.lock
+        reported = lock.reported_suggestions or []
+        reported_fps = {item.get("fingerprint") for item in reported}
+
+        async with GitHubMCPClient(self.github_token) as gh:
+            for s in suggestions:
+                title = s.get("title") or "Improvement suggestion"
+                body = s.get("body") or ""
+                labels = s.get("labels") or ["enhancement"]
+                fp = self._fingerprint(title, body)
+
+                if fp in reported_fps:
+                    continue
+
+                # Avoid duplicates by searching existing issues with the same title
+                search = await gh.search_issues(self.owner, self.repo, query=f"{title}")
+                found_number = None
+                try:
+                    items = search.get("items") if isinstance(search, dict) else None
+                except Exception:
+                    items = None
+                if items:
+                    for it in items:
+                        if isinstance(it, dict) and it.get("title") == title:
+                            found_number = it.get("number")
+                            break
+
+                if found_number is None:
+                    issue = await gh.create_issue(self.owner, self.repo, title=title, body=body, labels=labels)
+                    found_number = issue.get("number") if isinstance(issue, dict) else None
+
+                lock.reported_suggestions.append({
+                    "title": title,
+                    "fingerprint": fp,
+                    "issue_number": found_number,
+                    "reported_at": datetime.utcnow().isoformat(),
+                })
+
+        self.config_manager.save_lock()
     
     def process(self) -> bool:
         """

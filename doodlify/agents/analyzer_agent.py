@@ -60,12 +60,38 @@ class AnalyzerAgent:
             selector
         )
         
+        # Lightweight heuristics to guide suggestions
+        has_css_vars = self._detect_css_variables(frontend_files)
+        has_event_data_attrs = self._detect_data_attributes(frontend_files)
+        svg_count = self._count_svg_assets(frontend_files)
+        has_global_css = self._detect_global_styles(frontend_files)
+        has_marker_styles = self._detect_marker_styles(frontend_files)
+        has_favicon = self._detect_favicon_assets(frontend_files)
+        has_og_image = self._detect_og_image(frontend_files)
+
+        ctx = {
+            "image_files": image_files,
+            "text_files": text_files,
+            "selector": selector,
+            "ai_analysis": ai_analysis,
+            "has_css_vars": has_css_vars,
+            "has_event_data_attrs": has_event_data_attrs,
+            "svg_count": svg_count,
+            "has_global_css": has_global_css,
+            "has_marker_styles": has_marker_styles,
+            "has_favicon": has_favicon,
+            "has_og_image": has_og_image,
+        }
+
+        suggestions = self._build_improvement_suggestions(ctx)
+
         return {
             "files_of_interest": selector_matches if selector_matches else image_files + text_files,
             "image_files": image_files,
             "text_files": text_files,
             "selectors_found": self._extract_selectors_from_files(frontend_files),
-            "notes": ai_analysis
+            "notes": ai_analysis,
+            "improvement_suggestions": suggestions,
         }
     
     def _find_frontend_files(self, repo_path: Path, sources: List[str]) -> List[Path]:
@@ -187,6 +213,26 @@ class AnalyzerAgent:
                 return True
         
         return False
+
+    def _detect_favicon_assets(self, files: List[Path]) -> bool:
+        candidates = {"favicon.ico", "favicon.png", "apple-touch-icon.png", "apple-touch-icon-precomposed.png"}
+        for p in files:
+            name = p.name.lower()
+            if name in candidates:
+                return True
+        return False
+
+    def _detect_og_image(self, files: List[Path]) -> bool:
+        for p in files:
+            if p.suffix.lower() not in {'.html', '.htm'}:
+                continue
+            try:
+                txt = p.read_text(encoding='utf-8', errors='ignore').lower()
+                if 'property="og:image"' in txt or "property='og:image'" in txt or "og:image" in txt:
+                    return True
+            except Exception:
+                continue
+        return False
     
     def _extract_selectors_from_files(self, files: List[Path]) -> List[str]:
         """Extract common CSS selectors from files."""
@@ -272,3 +318,207 @@ Respond in JSON format with keys: framework, visual_elements_location, priority_
                 return {"analysis": response_text}
         except Exception as e:
             return {"error": str(e), "analysis": "AI analysis unavailable"}
+
+    def _build_improvement_suggestions(self, ctx: Dict[str, any]) -> List[Dict[str, any]]:
+        """Create optional, best-practice suggestions to improve adaptability.
+
+        Context keys:
+          - image_files: List[str]
+          - text_files: List[str]
+          - selector: Optional[str]
+          - ai_analysis: Dict[str, any]
+          - has_css_vars: bool
+          - has_event_data_attrs: bool
+          - svg_count: int
+          - has_global_css: bool
+          - has_marker_styles: bool
+          - has_favicon: bool
+          - has_og_image: bool
+        """
+        suggestions: List[Dict[str, any]] = []
+
+        image_files = ctx.get("image_files", [])
+        text_files = ctx.get("text_files", [])
+        selector = ctx.get("selector")
+        ai_analysis = ctx.get("ai_analysis", {})
+        has_css_vars = bool(ctx.get("has_css_vars"))
+        has_event_data_attrs = bool(ctx.get("has_event_data_attrs"))
+        svg_count = int(ctx.get("svg_count", 0))
+        has_global_css = bool(ctx.get("has_global_css"))
+        has_marker_styles = bool(ctx.get("has_marker_styles"))
+        has_favicon = bool(ctx.get("has_favicon"))
+        has_og_image = bool(ctx.get("has_og_image"))
+
+        # i18n is not required, but can help centralize copy
+        if not text_files:
+            suggestions.append({
+                "title": "Optional: Centralize user-facing copy in i18n files",
+                "body": (
+                    "No internationalization files were detected. While not required, keeping user-facing strings in i18n (e.g., `src/i18n/messages.json` or `locales/en/messages.json`) "
+                    "can make text adaptations more consistent across events."
+                ),
+                "labels": ["enhancement", "i18n", "event-customization"],
+            })
+
+        # Avoid enforcing hero images; suggest alternative adaptation levers
+        if not has_css_vars:
+            suggestions.append({
+                "title": "Add CSS variables for theme tokens (colors, spacing)",
+                "body": (
+                    "No CSS custom properties were detected (e.g., `:root { --color-primary: ... }`). Defining theme tokens lets the tool adjust palettes "
+                    "for events without relying on hero images."
+                ),
+                "labels": ["enhancement", "css", "theming"],
+            })
+
+        if not has_event_data_attrs and not selector:
+            suggestions.append({
+                "title": "Add data attributes to mark adaptable elements",
+                "body": (
+                    "Consider annotating adaptable UI with attributes like `[data-event-adaptable]`, `[data-event-role='banner']`, or `[data-event-color]` "
+                    "to help the analyzer and decorators target elements precisely."
+                ),
+                "labels": ["enhancement", "frontend", "event-customization"],
+            })
+
+        if svg_count == 0:
+            suggestions.append({
+                "title": "Prefer SVG for logos/illustrations to enable recoloring",
+                "body": (
+                    "No SVG assets were detected. Using SVG for logos/illustrations enables clean recoloring and decorations during events."
+                ),
+                "labels": ["enhancement", "images", "svg"],
+            })
+
+        if not has_global_css:
+            suggestions.append({
+                "title": "Ensure a global stylesheet or theme entrypoint exists",
+                "body": (
+                    "A global stylesheet (e.g., `src/styles/global.css` or `app/globals.css`) makes it easier to apply event-wide tweaks (palette, typography)."
+                ),
+                "labels": ["enhancement", "css", "theming"],
+            })
+
+        if not has_marker_styles:
+            suggestions.append({
+                "title": "Style list markers (e.g., vignettes) to allow event variations",
+                "body": (
+                    "No `::marker` styles detected. Adding list/bullet marker styles enables subtle event adaptations without layout changes."
+                ),
+                "labels": ["enhancement", "css"],
+            })
+
+        # Favicon / touch icons
+        if has_favicon:
+            suggestions.append({
+                "title": "Provide event-ready favicon/touch icon variants",
+                "body": (
+                    "Favicon assets detected. Consider keeping event variants (e.g., `favicon-halloween.png`, `apple-touch-icon-xmas.png`) "
+                    "and a small switch mechanism to apply seasonal icons. Keep changes subtle and non-intrusive."
+                ),
+                "labels": ["enhancement", "assets", "events"],
+            })
+        else:
+            suggestions.append({
+                "title": "Establish predictable favicon/touch icon assets",
+                "body": (
+                    "No favicon/touch icon assets were detected. Establishing predictable files (e.g., `public/favicon.png`, `public/apple-touch-icon.png`) "
+                    "allows non-intrusive event variants to be swapped in."
+                ),
+                "labels": ["enhancement", "assets"],
+            })
+
+        # Open Graph social preview image
+        if has_og_image:
+            suggestions.append({
+                "title": "Provide seasonal Open Graph social preview variants",
+                "body": (
+                    "An `og:image` meta tag was detected. Consider providing seasonal social preview images (e.g., subtle hat or snow accents) "
+                    "that can be swapped during events without intrusive UI changes."
+                ),
+                "labels": ["enhancement", "seo", "assets"],
+            })
+        else:
+            suggestions.append({
+                "title": "Add Open Graph image meta for social sharing",
+                "body": (
+                    "No `og:image` meta tag was detected. Adding one enables tasteful, non-intrusive seasonal variants for social sharing cards."
+                ),
+                "labels": ["enhancement", "seo"],
+            })
+
+        if not selector:
+            suggestions.append({
+                "title": "Add CSS selectors or data-attributes to mark event-adaptable elements",
+                "body": (
+                    "No `defaults.selector` was provided. Adding selectors like `img.hero, .banner-image, [data-event-adaptable]` helps the analyzer "
+                    "target the right UI elements and improves adaptation precision."
+                ),
+                "labels": ["enhancement", "frontend", "event-customization"],
+            })
+
+        # If AI analysis provided considerations, turn them into suggestions
+        considerations = None
+        if isinstance(ai_analysis, dict):
+            considerations = ai_analysis.get("considerations")
+        if considerations and isinstance(considerations, str) and len(considerations) > 10:
+            suggestions.append({
+                "title": "Apply analyzer considerations to improve event readiness",
+                "body": considerations,
+                "labels": ["enhancement", "code-health"],
+            })
+
+        return suggestions
+
+    def _detect_css_variables(self, files: List[Path]) -> bool:
+        for p in files:
+            if p.suffix.lower() not in {'.css', '.scss', '.sass', '.less'}:
+                continue
+            try:
+                txt = p.read_text(encoding='utf-8', errors='ignore')
+                if ":root" in txt and "--" in txt:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _detect_data_attributes(self, files: List[Path]) -> bool:
+        patterns = ["data-event-adaptable", "data-event-role", "data-event-color"]
+        for p in files:
+            if p.suffix.lower() not in {'.tsx', '.jsx', '.html', '.vue', '.svelte'}:
+                continue
+            try:
+                txt = p.read_text(encoding='utf-8', errors='ignore')
+                if any(attr in txt for attr in patterns):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _count_svg_assets(self, files: List[Path]) -> int:
+        count = 0
+        for p in files:
+            if p.suffix.lower() == '.svg':
+                count += 1
+        return count
+
+    def _detect_global_styles(self, files: List[Path]) -> bool:
+        candidates = ["global.css", "globals.css", "base.css", "theme.css"]
+        for p in files:
+            if p.suffix.lower() not in {'.css', '.scss', '.sass', '.less'}:
+                continue
+            if any(name in str(p).lower() for name in candidates):
+                return True
+        return False
+
+    def _detect_marker_styles(self, files: List[Path]) -> bool:
+        for p in files:
+            if p.suffix.lower() not in {'.css', '.scss', '.sass', '.less'}:
+                continue
+            try:
+                txt = p.read_text(encoding='utf-8', errors='ignore')
+                if "::marker" in txt:
+                    return True
+            except Exception:
+                continue
+        return False
