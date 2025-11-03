@@ -15,28 +15,54 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes under doodlify/
+        id: changes
+        run: |
+          # Find previous tag (if any); otherwise compare against the first commit
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="$PREV_TAG..HEAD"
+          else
+            RANGE="$(git rev-list --max-parents=0 HEAD)..HEAD"
+          fi
+          echo "Comparing range: $RANGE"
+          CHANGED=$(git diff --name-only $RANGE -- 'doodlify/**' | wc -l | tr -d ' ')
+          if [ "$CHANGED" != "0" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+          echo "Files changed under doodlify/: $CHANGED"
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+        if: steps.changes.outputs.changed == 'true'
 
       - name: Install build tools
+        if: steps.changes.outputs.changed == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install build twine
 
       - name: Build package (sdist + wheel)
+        if: steps.changes.outputs.changed == 'true'
         run: |
           python -m build
 
       - name: Upload build artifacts
+        if: steps.changes.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: doodlify-dist
           path: dist/*
 
       - name: Create GitHub Release
+        if: steps.changes.outputs.changed == 'true'
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
@@ -45,4 +71,9 @@ jobs:
             dist/*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: No code changes detected under doodlify/ — skipping release
+        if: steps.changes.outputs.changed != 'true'
+        run: |
+          echo "No changes under doodlify/. Skipping build and release."
 

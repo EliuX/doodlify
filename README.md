@@ -435,4 +435,4 @@ For issues and questions:
 
 ---
 
-Made with ❤️ by the Doodlify team
+Made with ❤️ by the [EliuX][mailto: eliecerhdz@gmail.com]
