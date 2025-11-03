@@ -1,6 +1,11 @@
 Doodlify 🎨
 ===============
 
+[![CD](https://github.com/EliuX/doodlify/actions/workflows/doodlify.yml/badge.svg)](https://github.com/EliuX/doodlify/actions/workflows/doodlify.yml)
+[![Release](https://img.shields.io/github/v/release/EliuX/doodlify?display_name=release)](https://github.com/EliuX/doodlify/releases/latest)
+[![License](https://img.shields.io/github/license/EliuX/doodlify)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.8%20|%203.9%20|%203.10%20|%203.11-blue)](#)
+
 Automated Event-Based Frontend Customization Tool - Transform your website for special events using AI.
 
 Doodlify is a Python CLI tool that automatically adapts frontend projects for special events like Halloween, Christmas, or custom celebrations. It uses AI agents to intelligently modify images, text, and other visual elements to match your event's theme.
