@@ -1,0 +1,38 @@
+{
+  "project": {
+    "name": "My Frontend Project",
+    "description": "A React-based web application with multiple landing pages. The main hero images are located in public/assets/images/ and the internationalization files are in src/i18n/",
+    "sources": ["src/", "public/"],
+    "targetBranch": "main"
+  },
+  "defaults": {
+    "selector": "img.hero, main > img, .banner-image",
+    "branchPrefix": "event/"
+  },
+  "events": [
+    {
+      "id": "halloween-2024",
+      "name": "Halloween 2024",
+      "description": "Transform the website with spooky Halloween theme. Add pumpkins, ghosts, and autumn colors. Make it fun and festive but not too scary.",
+      "startDate": "2024-10-15",
+      "endDate": "2024-11-01",
+      "branch": "halloween-2024"
+    },
+    {
+      "id": "christmas-2024",
+      "name": "Christmas 2024",
+      "description": "Add festive Christmas decorations. Include snowflakes, Santa themes, winter colors (red, green, white). Keep it joyful and family-friendly.",
+      "startDate": "2024-12-01",
+      "endDate": "2024-12-26",
+      "branch": "christmas-2024"
+    },
+    {
+      "id": "new-year-2025",
+      "name": "New Year 2025",
+      "description": "Celebrate the new year with fireworks, champagne glasses, and '2025' decorations. Use gold, silver, and sparkle effects.",
+      "startDate": "2024-12-27",
+      "endDate": "2025-01-05",
+      "branch": "new-year-2025"
+    }
+  ]
+}
