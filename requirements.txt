@@ -7,3 +7,4 @@ requests>=2.31.0
 pyyaml>=6.0.1
 mcp>=0.9.0
 haystack-ai>=2.0.0
+mcp-haystack>=0.9.0

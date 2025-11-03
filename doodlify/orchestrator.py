@@ -11,9 +11,10 @@ from datetime import datetime
 
 from .config_manager import ConfigManager
 from .git_agent import GitAgent
-from .github_client import GitHubMCPClient
 from .agents import ImageAgent, TextAgent, AnalyzerAgent
+from .agents.github_agent import GitHubAgent
 from .models import EventLock, AnalysisResult
+from haystack.dataclasses import ChatMessage
 
 
 class Orchestrator:
@@ -122,12 +123,7 @@ class Orchestrator:
                 # Report improvement suggestions as GitHub issues (avoid duplicates)
                 if analysis.improvement_suggestions:
                     print(f"\n📝 Reporting {len(analysis.improvement_suggestions)} improvement suggestion(s) to GitHub issues (deduped)...")
-                    try:
-                        asyncio.run(self._report_suggestions(analysis.improvement_suggestions))
-                    except RuntimeError:
-                        # If already inside an event loop (unlikely here), create a new task
-                        loop = asyncio.get_event_loop()
-                        loop.run_until_complete(self._report_suggestions(analysis.improvement_suggestions))
+                    self._report_suggestions(analysis.improvement_suggestions)
             else:
                 print("✓ Using cached global analysis")
             
@@ -151,45 +147,68 @@ class Orchestrator:
         data = (title.strip() + "\n" + body.strip()).encode("utf-8")
         return hashlib.sha256(data).hexdigest()
 
-    async def _report_suggestions(self, suggestions: List[dict]) -> None:
+    def _report_suggestions(self, suggestions: List[dict]) -> None:
         """Create GitHub issues for suggestions if not already reported."""
         lock = self.config_manager.lock
         reported = lock.reported_suggestions or []
         reported_fps = {item.get("fingerprint") for item in reported}
 
-        async with GitHubMCPClient(self.github_token) as gh:
-            for s in suggestions:
-                title = s.get("title") or "Improvement suggestion"
-                body = s.get("body") or ""
-                labels = s.get("labels") or ["enhancement"]
-                fp = self._fingerprint(title, body)
+        # Initialize GitHub agent
+        github_agent = GitHubAgent(self.github_token, self.openai_api_key)
+        
+        for s in suggestions:
+            title = s.get("title") or "Improvement suggestion"
+            body = s.get("body") or ""
+            labels = s.get("labels") or ["enhancement"]
+            fp = self._fingerprint(title, body)
 
-                if fp in reported_fps:
-                    continue
+            if fp in reported_fps:
+                continue
 
-                # Avoid duplicates by searching existing issues with the same title
-                search = await gh.search_issues(self.owner, self.repo, query=f"{title}")
+            # Use agent to handle issue creation with duplicate checking
+            user_input = f"""
+            Create a GitHub issue in repository {self.owner}/{self.repo} with:
+            - Title: {title}
+            - Body: {body}
+            - Labels: {', '.join(labels)}
+            
+            Before creating, search for existing issues with the same title to avoid duplicates.
+            If a duplicate exists, return its issue number. Otherwise, create the issue and return the new issue number.
+            Return the result as JSON: {{"issue_number": <number>, "created": <true/false>}}
+            """
+            
+            try:
+                response = github_agent.run(messages=[ChatMessage.from_user(user_input)])
+                
+                # Extract issue number from agent response
                 found_number = None
-                try:
-                    items = search.get("items") if isinstance(search, dict) else None
-                except Exception:
-                    items = None
-                if items:
-                    for it in items:
-                        if isinstance(it, dict) and it.get("title") == title:
-                            found_number = it.get("number")
-                            break
-
-                if found_number is None:
-                    issue = await gh.create_issue(self.owner, self.repo, title=title, body=body, labels=labels)
-                    found_number = issue.get("number") if isinstance(issue, dict) else None
-
+                if response and "messages" in response:
+                    final_message = response["messages"][-1]
+                    if hasattr(final_message, "content"):
+                        # Try to extract issue number from response
+                        import re
+                        import json
+                        try:
+                            # Look for JSON in response
+                            json_match = re.search(r'\{[^}]*"issue_number"[^}]*\}', final_message.content)
+                            if json_match:
+                                result = json.loads(json_match.group())
+                                found_number = result.get("issue_number")
+                        except:
+                            # Fallback: look for issue number pattern
+                            match = re.search(r'#(\d+)', final_message.content)
+                            if match:
+                                found_number = int(match.group(1))
+                
                 lock.reported_suggestions.append({
                     "title": title,
                     "fingerprint": fp,
                     "issue_number": found_number,
                     "reported_at": datetime.utcnow().isoformat(),
                 })
+            except Exception as e:
+                print(f"Warning: Failed to create issue via agent: {e}")
+                continue
 
         self.config_manager.save_lock()
     
@@ -444,12 +463,12 @@ Generated by Doodlify 🎨
             
             print(f"Pushing {len(events_to_push)} event(s)...\n")
             
-            async with GitHubMCPClient(self.github_token) as github_client:
-                for event in events_to_push:
-                    success = await self._push_event(event, github_client)
-                    if not success:
-                        print(f"✗ Failed to push event: {event.name}")
-                        return False
+            github_agent = GitHubAgent(self.github_token, self.openai_api_key)
+            for event in events_to_push:
+                success = self._push_event(event, github_agent)
+                if not success:
+                    print(f"✗ Failed to push event: {event.name}")
+                    return False
             
             print("\n✓ Push phase completed successfully!")
             return True
@@ -460,7 +479,7 @@ Generated by Doodlify 🎨
             traceback.print_exc()
             return False
     
-    async def _push_event(self, event: EventLock, github_client: GitHubMCPClient) -> bool:
+    def _push_event(self, event: EventLock, github_agent: GitHubAgent) -> bool:
         """Push a single event's changes."""
         print(f"\n{'=' * 60}")
         print(f"🚀 Pushing: {event.name}")
@@ -482,17 +501,37 @@ Generated by Doodlify 🎨
             pr_title = f"🎨 {event.name} Theme Customizations"
             pr_body = self._generate_pr_description(event)
             
-            pr_result = await github_client.create_pull_request(
-                owner=self.owner,
-                repo=self.repo,
-                title=pr_title,
-                body=pr_body,
-                head=branch_name,
-                base=target_branch,
-                draft=False
-            )
+            # Use agent to create pull request
+            user_input = f"""
+            Create a pull request in repository {self.owner}/{self.repo} with:
+            - Title: {pr_title}
+            - Body: {pr_body}
+            - Head branch: {branch_name}
+            - Base branch: {config.defaults.baseBranch or 'main'}
             
-            pr_url = f"https://github.com/{self.repo_name}/pull/{pr_result.get('number', '')}"
+            Return the pull request number as JSON: {{"pr_number": <number>}}
+            """
+            
+            pr_response = github_agent.run(messages=[ChatMessage.from_user(user_input)])
+            
+            # Extract PR number from response
+            pr_number = None
+            if pr_response and "messages" in pr_response:
+                final_message = pr_response["messages"][-1]
+                if hasattr(final_message, "content"):
+                    import re
+                    import json
+                    try:
+                        json_match = re.search(r'\{[^}]*"pr_number"[^}]*\}', final_message.content)
+                        if json_match:
+                            result = json.loads(json_match.group())
+                            pr_number = result.get("pr_number")
+                    except:
+                        match = re.search(r'#(\d+)', final_message.content)
+                        if match:
+                            pr_number = int(match.group(1))
+            
+            pr_url = f"https://github.com/{self.owner}/{self.repo}/pull/{pr_number}" if pr_number else "Unknown"
             print(f"✓ Pull request created: {pr_url}")
             
             # Update progress
