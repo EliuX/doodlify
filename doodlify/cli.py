@@ -59,7 +59,6 @@ def analyze(config: str):
         github_token = get_env_or_exit('GITHUB_PERSONAL_ACCESS_TOKEN')
         openai_api_key = get_env_or_exit('OPENAI_API_KEY')
         repo_name = get_env_or_exit('GITHUB_REPO_NAME')
-        target_branch = os.getenv('GIT_BRANCH_CHANGES_TARGET')
         
         # Initialize
         config_manager = ConfigManager(config_path=config)
@@ -68,7 +67,6 @@ def analyze(config: str):
             github_token=github_token,
             openai_api_key=openai_api_key,
             repo_name=repo_name,
-            target_branch=target_branch
         )
         
         # Run analysis
@@ -106,7 +104,6 @@ def process(config: str):
         github_token = get_env_or_exit('GITHUB_PERSONAL_ACCESS_TOKEN')
         openai_api_key = get_env_or_exit('OPENAI_API_KEY')
         repo_name = get_env_or_exit('GITHUB_REPO_NAME')
-        target_branch = os.getenv('GIT_BRANCH_CHANGES_TARGET')
         
         # Initialize
         config_manager = ConfigManager(config_path=config)
@@ -115,7 +112,6 @@ def process(config: str):
             github_token=github_token,
             openai_api_key=openai_api_key,
             repo_name=repo_name,
-            target_branch=target_branch
         )
         
         # Run processing
@@ -152,7 +148,6 @@ def push(config: str):
         github_token = get_env_or_exit('GITHUB_PERSONAL_ACCESS_TOKEN')
         openai_api_key = get_env_or_exit('OPENAI_API_KEY')
         repo_name = get_env_or_exit('GITHUB_REPO_NAME')
-        target_branch = os.getenv('GIT_BRANCH_CHANGES_TARGET')
         
         # Initialize
         config_manager = ConfigManager(config_path=config)
@@ -161,7 +156,6 @@ def push(config: str):
             github_token=github_token,
             openai_api_key=openai_api_key,
             repo_name=repo_name,
-            target_branch=target_branch
         )
         
         # Run push (async)
@@ -206,7 +200,6 @@ def clear(config: str, event_id: Optional[str]):
         github_token = os.getenv('GITHUB_PERSONAL_ACCESS_TOKEN', 'dummy')
         openai_api_key = os.getenv('OPENAI_API_KEY', 'dummy')
         repo_name = os.getenv('GITHUB_REPO_NAME', 'dummy/repo')
-        target_branch = os.getenv('GIT_BRANCH_CHANGES_TARGET')
         
         # Initialize
         config_manager = ConfigManager(config_path=config)
@@ -215,7 +208,6 @@ def clear(config: str, event_id: Optional[str]):
             github_token=github_token,
             openai_api_key=openai_api_key,
             repo_name=repo_name,
-            target_branch=target_branch
         )
         
         # Run clear

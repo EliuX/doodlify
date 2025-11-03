@@ -7,7 +7,7 @@
   },
   "defaults": {
     "selector": "img.hero, main > img, .banner-image",
-    "branchPrefix": "event/"
+    "branchPrefix": "feature/event/"
   },
   "events": [
     {
@@ -15,15 +15,15 @@
       "name": "Halloween 2024",
       "description": "Transform the website with spooky Halloween theme. Add pumpkins, ghosts, and autumn colors. Make it fun and festive but not too scary.",
       "startDate": "2024-10-15",
-      "endDate": "2024-11-01",
+      "endDate": "2024-11-03",
       "branch": "halloween-2024"
     },
     {
       "id": "christmas-2024",
       "name": "Christmas 2024",
       "description": "Add festive Christmas decorations. Include snowflakes, Santa themes, winter colors (red, green, white). Keep it joyful and family-friendly.",
-      "startDate": "2024-12-01",
-      "endDate": "2024-12-26",
+      "startDate": "2024-12-15",
+      "endDate": "2024-12-27",
       "branch": "christmas-2024"
     },
     {
