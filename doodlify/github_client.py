@@ -1,5 +1,5 @@
 """
-GitHub MCP client for repository operations.
+GitHub MCP client for repository operations using Haystack and MCP.
 """
 
 import os
@@ -17,6 +17,21 @@ class GitHubMCPClient:
         self.session: Optional[ClientSession] = None
         self._context_stack = None
         self._server_params = self._get_server_params()
+    
+    async def __aenter__(self):
+        """Async context manager entry."""
+        self._context_stack = stdio_client(self._server_params)
+        read_stream, write_stream = await self._context_stack.__aenter__()
+        self.session = ClientSession(read_stream, write_stream)
+        await self.session.__aenter__()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        if self.session:
+            await self.session.__aexit__(exc_type, exc_val, exc_tb)
+        if self._context_stack:
+            await self._context_stack.__aexit__(exc_type, exc_val, exc_tb)
     
     def _get_server_params(self) -> StdioServerParameters:
         """Get MCP server parameters based on available tooling."""
@@ -49,21 +64,6 @@ class GitHubMCPClient:
                 ],
                 env=github_mcp_server_env,
             )
-    
-    async def __aenter__(self):
-        """Async context manager entry."""
-        self._context_stack = stdio_client(self._server_params)
-        read_stream, write_stream = await self._context_stack.__aenter__()
-        self.session = ClientSession(read_stream, write_stream)
-        await self.session.__aenter__()
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
-        if self.session:
-            await self.session.__aexit__(exc_type, exc_val, exc_tb)
-        if self._context_stack:
-            await self._context_stack.__aexit__(exc_type, exc_val, exc_tb)
     
     async def get_file_contents(self, owner: str, repo: str, path: str, branch: str = "main") -> str:
         """Get file contents from repository."""
