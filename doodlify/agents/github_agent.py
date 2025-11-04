@@ -2,12 +2,12 @@
 GitHub agent using Haystack AI Agent with MCP tools.
 """
 
-import os
 import shutil
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any
+
+from haystack.components.agents import Agent
 from haystack.components.generators.chat import OpenAIChatGenerator
 from haystack.dataclasses import ChatMessage
-from haystack.components.agents import Agent
 from haystack.utils import Secret
 from haystack_integrations.tools.mcp import MCPTool, StdioServerInfo
 
@@ -42,11 +42,11 @@ class GitHubAgent:
                 command="docker",
                 args=[
                     "run",
+                    "-i",
                     "--rm",
-                    "-p", "8080:8080",
                     "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
                     "-e", "GITHUB_TOOLSETS",
-                    "modelcontextprotocol/server-github"
+                    "mcp/github"
                 ],
                 env=github_mcp_server_env,
             )
@@ -111,14 +111,7 @@ class GitHubAgent:
         """Create Haystack agent with MCP tools."""
         return Agent(
             chat_generator=OpenAIChatGenerator(api_key=Secret.from_token(self.openai_api_key)),
-            system_prompt="""
-            You are a helpful Agent that can operate with GitHub repositories.
-            You can read repository contents, create issues, search for existing issues,
-            create branches, push files, and create pull requests.
-            
-            Always be helpful, concise, and follow best practices.
-            When creating issues, use appropriate labels and clear descriptions.
-            """,
+            system_prompt="""You can operate GitHub repositories: read files, create/search issues, create branches/PRs. Be concise.""",
             tools=self.tools,
         )
     
