@@ -9,34 +9,35 @@ from haystack.components.agents import Agent
 from haystack.components.generators.chat import OpenAIChatGenerator
 from haystack.dataclasses import ChatMessage
 from haystack.utils import Secret
-from haystack_integrations.tools.mcp import MCPTool, StdioServerInfo
+from haystack_integrations.tools.mcp import MCPTool, StdioServerInfo, MCPToolset
 
 
 class SafeMCPTool(MCPTool):
     """MCP Tool wrapper that prevents deepcopy issues in Haystack Agent."""
+
     def __deepcopy__(self, memo):
         return self  # Do not copy, reuse the instance
 
 
 class GitHubAgent:
     """GitHub operations agent using Haystack Agent with MCP tools."""
-    
+
     def __init__(self, github_token: str, openai_api_key: str):
         self.github_token = github_token
         self.openai_api_key = openai_api_key
         self.server_info = self._get_server_info()
-        self.tools = self._initialize_tools()
+        self.tools = self._create_toolset()
         self.agent = self._create_agent()
-    
+
     def _get_server_info(self) -> StdioServerInfo:
         """Get MCP server info based on available tooling."""
         has_docker = shutil.which("docker") is not None
-        
+
         github_mcp_server_env = {
             "GITHUB_PERSONAL_ACCESS_TOKEN": self.github_token,
             "GITHUB_DYNAMIC_TOOLSETS": "1"
         }
-        
+
         if has_docker:
             return StdioServerInfo(
                 command="docker",
@@ -59,62 +60,35 @@ class GitHubAgent:
                 ],
                 env=github_mcp_server_env,
             )
-    
-    def _initialize_tools(self) -> List[SafeMCPTool]:
-        """Initialize MCP tools for GitHub operations."""
-        get_github_file_contents_tool = SafeMCPTool(
-            name="get_file_contents", 
-            server_info=self.server_info, 
-            description="Get contents of a file or directory from GitHub"
+
+    def _create_toolset(self):
+        return MCPToolset(
+            server_info=self.server_info,
+            tool_names=[
+                "get_file_contents",
+                "create_issue",
+                "search_issues",
+                "list_issues",
+                "create_branch",
+                "push_files",
+                "create_pull_request"
+            ]  # Omit to load all tools, but may overwhelm LLM if many
         )
-        
-        create_github_issue_tool = SafeMCPTool(
-            name="create_issue", 
-            server_info=self.server_info, 
-            description="Create a new issue in a GitHub repository"
-        )
-        
-        search_github_issues_tool = SafeMCPTool(
-            name="search_issues", 
-            server_info=self.server_info, 
-            description="Search for issues and pull requests in GitHub"
-        )
-        
-        create_github_branch_tool = SafeMCPTool(
-            name="create_branch", 
-            server_info=self.server_info, 
-            description="Create a new branch in a GitHub repository"
-        )
-        
-        push_github_files_tool = SafeMCPTool(
-            name="push_files", 
-            server_info=self.server_info, 
-            description="Push multiple files to a GitHub repository in a single commit"
-        )
-        
-        create_github_pr_tool = SafeMCPTool(
-            name="create_pull_request", 
-            server_info=self.server_info, 
-            description="Create a pull request in a GitHub repository"
-        )
-        
-        return [
-            get_github_file_contents_tool,
-            create_github_issue_tool,
-            search_github_issues_tool,
-            create_github_branch_tool,
-            push_github_files_tool,
-            create_github_pr_tool
-        ]
-    
+
     def _create_agent(self) -> Agent:
         """Create Haystack agent with MCP tools."""
-        return Agent(
+        agent = Agent(
             chat_generator=OpenAIChatGenerator(api_key=Secret.from_token(self.openai_api_key)),
-            system_prompt="""You can operate GitHub repositories: read files, create/search issues, create branches/PRs. Be concise.""",
+            system_prompt="""
+            You can operate GitHub repositories: read files, create/search issues, create branches/PRs. 
+            Queries to "search_issues" must include 'is:issue state:open' as prefix.
+            Be concise.
+            """,
             tools=self.tools,
         )
-    
+        agent.warm_up()
+        return agent
+
     def run(self, messages: List[ChatMessage]) -> Dict[str, Any]:
         """Run the agent with a list of messages."""
         return self.agent.run(messages=messages)
