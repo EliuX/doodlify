@@ -178,6 +178,15 @@ class Orchestrator:
                 print(f"  Key: {key or 'unknown'}  |  Value: false")
                 continue
 
+            # Additional guard for AI-driven suggestions: require evidence/confidence
+            if key == "ai_considerations":
+                conf = float(s.get("confidence") or 0.0)
+                ev = s.get("evidence") or []
+                if not ev or conf < 0.6:
+                    print(f"- Skipping ai_considerations due to insufficient evidence/confidence: {title}")
+                    print(f"  confidence={conf}, evidence_count={len(ev)} (need >=0.6 and >=1)")
+                    continue
+
             # If reporting due to --report-all while map=false, mark as optional in logs
             if report_all and not report_map.get(key, True):
                 print(f"- Filing OPTIONAL suggestion due to --report-all: {title}")

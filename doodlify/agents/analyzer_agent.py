@@ -325,35 +325,81 @@ Analyze this frontend project to identify what elements should be customized for
 Project Description: {project_description}
 {f"Target Selector: {selector}" if selector else "No specific selector provided."}
 
-Sample Files:
+Sample Files (names and excerpts):
 {chr(10).join(file_samples[:5])}
 
-Provide insights on:
-1. What type of frontend framework is used (React, Vue, Static HTML, etc.)
-2. Where are the main visual elements located (hero images, banners, logos)
-3. What files would be best to modify for event customization
-4. Any special considerations for this project
+Return STRICT JSON with the following keys ONLY:
+{
+  "framework": "one of: React|Vue|Svelte|Static HTML|Next.js|Nuxt|Unknown",
+  "visual_elements_location": "string",
+  "priority_files": ["relative/path/one.ext", "relative/path/two.ext"],
+  "considerations": "short actionable considerations specific to the project (<= 5 sentences)",
+  "evidence": [
+    {
+      "path": "relative/path/from/repo/root",
+      "reason": "why this path supports your consideration",
+      "snippet": "a short exact snippet from that file supporting the claim (if available)"
+    }
+  ]
+}
 
-Respond in JSON format with keys: framework, visual_elements_location, priority_files, considerations
+Rules:
+- Do NOT invent paths. Only include paths you are confident about.
+- Prefer citing files shown in the sample above or common entrypoints (app/, src/, public/).
+- Keep "considerations" project-specific, not generic.
 """
         
         try:
             response = self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "You are a code analysis expert. Respond in JSON format."},
+                    {"role": "system", "content": "You are a code analysis expert. Respond ONLY with valid JSON."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
-                max_tokens=1000
+                temperature=0.0,
+                max_tokens=900
             )
             response_text = response.choices[0].message.content.strip()
-            
-            # Try to parse as JSON, otherwise return as text
+
+            # Parse JSON; if invalid, return error wrapper
             try:
-                return json.loads(response_text)
+                parsed = json.loads(response_text)
             except json.JSONDecodeError:
-                return {"analysis": response_text}
+                return {"error": "invalid_json", "raw": response_text, "analysis": "AI analysis unavailable"}
+
+            # Validate evidence: check files exist and optional snippet present in content
+            evidence = parsed.get("evidence") or []
+            validated: List[Dict[str, str]] = []
+            for ev in evidence[:10]:  # limit validation cost
+                try:
+                    ev_path = ev.get("path")
+                    if not ev_path:
+                        continue
+                    full = (repo_path / ev_path).resolve()
+                    if not full.exists() or not full.is_file():
+                        continue
+                    ev_copy = {"path": ev_path, "reason": ev.get("reason", "")}
+                    snippet = ev.get("snippet")
+                    if snippet:
+                        try:
+                            txt = full.read_text(encoding='utf-8', errors='ignore')
+                            if snippet in txt:
+                                ev_copy["snippet_match"] = True
+                            else:
+                                ev_copy["snippet_match"] = False
+                        except Exception:
+                            ev_copy["snippet_match"] = False
+                    validated.append(ev_copy)
+                except Exception:
+                    continue
+
+            # Compute a simple confidence: fraction of validated evidence out of provided
+            denom = max(1, len(evidence))
+            confidence = round(min(1.0, len(validated) / denom), 2)
+
+            parsed["evidence_validated"] = validated
+            parsed["confidence"] = confidence
+            return parsed
         except Exception as e:
             return {"error": str(e), "analysis": "AI analysis unavailable"}
 
@@ -517,18 +563,43 @@ Respond in JSON format with keys: framework, visual_elements_location, priority_
                 "labels": ["enhancement", "frontend", "event-customization"],
             })
 
-        # If AI analysis provided considerations, turn them into suggestions
+        # If AI analysis provided considerations WITH EVIDENCE, turn them into suggestions
         considerations = None
+        evidence_validated: List[Dict[str, str]] = []
+        confidence = 0.0
         if isinstance(ai_analysis, dict):
             considerations = ai_analysis.get("considerations")
-        if considerations and isinstance(considerations, str) and len(considerations) > 10:
-            logger.info("Creating suggestion: AI analysis provided specific considerations")
+            evidence_validated = ai_analysis.get("evidence_validated") or []
+            try:
+                confidence = float(ai_analysis.get("confidence") or 0.0)
+            except Exception:
+                confidence = 0.0
+
+        # Thresholds
+        min_evidence = 1
+        min_conf = 0.6
+
+        if (
+            considerations and isinstance(considerations, str) and len(considerations) > 10
+            and isinstance(evidence_validated, list) and len(evidence_validated) >= min_evidence
+            and confidence >= min_conf
+        ):
+            logger.info(
+                f"Creating suggestion: AI considerations (confidence={confidence}, evidence={len(evidence_validated)})"
+            )
             suggestions.append({
                 "key": "ai_considerations",
                 "title": "Apply analyzer considerations to improve event readiness",
                 "body": considerations,
                 "labels": ["enhancement", "code-health"],
+                "evidence": evidence_validated,
+                "confidence": confidence,
             })
+        else:
+            if considerations:
+                logger.info(
+                    f"Skipping AI considerations due to insufficient evidence/confidence (confidence={confidence}, evidence={len(evidence_validated) if isinstance(evidence_validated, list) else 0})"
+                )
 
         return suggestions
 
