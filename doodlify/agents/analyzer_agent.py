@@ -4,9 +4,14 @@ Analyzer agent using Haystack AI for codebase analysis.
 
 import re
 import json
+import logging
 from pathlib import Path
 from typing import List, Dict, Set, Optional
 from openai import OpenAI
+
+# Configure logging for analyzer visibility
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 class AnalyzerAgent:
@@ -36,38 +41,62 @@ class AnalyzerAgent:
             Analysis results including files to modify
         """
         print("🔍 Analyzing codebase...")
+        logger.info(f"Starting codebase analysis for repository: {repo_path}")
+        logger.info(f"Source directories to scan: {sources if sources else ['entire repository']}")
         
         # Find all relevant files
         frontend_files = self._find_frontend_files(repo_path, sources)
+        logger.info(f"Found {len(frontend_files)} frontend files across all source directories")
         
         # Analyze files
         image_files = self._find_image_files(frontend_files)
+        logger.info(f"Discovered {len(image_files)} image files/references")
+        
         text_files = self._find_text_files(frontend_files)
+        logger.info(f"Found {len(text_files)} i18n/text files")
         
         # If selector provided, find files using that selector
         selector_matches = []
         if selector:
+            logger.info(f"Searching for files matching CSS selector: {selector}")
             selector_matches = self._find_files_with_selector(
                 frontend_files,
                 selector
             )
+            logger.info(f"Found {len(selector_matches)} files matching selector '{selector}'")
         
         # Use AI to provide intelligent analysis
+        logger.info(f"Running AI analysis on sample of {min(20, len(frontend_files))} files")
         ai_analysis = self._ai_analyze_structure(
             repo_path,
             frontend_files[:20],  # Limit to first 20 files for analysis
             project_description,
             selector
         )
+        logger.info("AI analysis completed")
         
         # Lightweight heuristics to guide suggestions
+        logger.info("Running heuristic analysis to detect project features...")
         has_css_vars = self._detect_css_variables(frontend_files)
+        logger.info(f"CSS variables detected: {has_css_vars}")
+        
         has_event_data_attrs = self._detect_data_attributes(frontend_files)
+        logger.info(f"Event data attributes detected: {has_event_data_attrs}")
+        
         svg_count = self._count_svg_assets(frontend_files)
+        logger.info(f"SVG assets found: {svg_count}")
+        
         has_global_css = self._detect_global_styles(frontend_files)
+        logger.info(f"Global CSS files detected: {has_global_css}")
+        
         has_marker_styles = self._detect_marker_styles(frontend_files)
+        logger.info(f"CSS marker styles detected: {has_marker_styles}")
+        
         has_favicon = self._detect_favicon_assets(frontend_files)
+        logger.info(f"Favicon assets detected: {has_favicon}")
+        
         has_og_image = self._detect_og_image(frontend_files)
+        logger.info(f"Open Graph image meta tags detected: {has_og_image}")
 
         ctx = {
             "image_files": image_files,
@@ -83,7 +112,9 @@ class AnalyzerAgent:
             "has_og_image": has_og_image,
         }
 
+        logger.info("Building improvement suggestions based on analysis...")
         suggestions = self._build_improvement_suggestions(ctx)
+        logger.info(f"Generated {len(suggestions)} improvement suggestions")
 
         return {
             "files_of_interest": selector_matches if selector_matches else image_files + text_files,
@@ -108,10 +139,17 @@ class AnalyzerAgent:
         
         for search_path in search_paths:
             if not search_path.exists():
+                logger.warning(f"Source directory does not exist: {search_path}")
                 continue
             
+            logger.info(f"Scanning directory: {search_path}")
+            path_files = []
             for ext in frontend_extensions:
-                files.extend(search_path.rglob(f"*{ext}"))
+                ext_files = list(search_path.rglob(f"*{ext}"))
+                path_files.extend(ext_files)
+            
+            logger.info(f"Found {len(path_files)} frontend files in {search_path}")
+            files.extend(path_files)
         
         # Filter out node_modules, build, dist, etc.
         exclude_patterns = ['node_modules', 'dist', 'build', '.next', 'out', 'coverage', '.git']
@@ -351,10 +389,12 @@ Respond in JSON format with keys: framework, visual_elements_location, priority_
 
         # i18n is not required, but can help centralize copy
         if not text_files:
+            logger.info("Creating suggestion: No i18n files found - recommending centralized text management")
             suggestions.append({
+                "key": "i18n",
                 "title": "Optional: Centralize user-facing copy in i18n files",
                 "body": (
-                    "No internationalization files were detected. While not required, keeping user-facing strings in i18n (e.g., `src/i18n/messages.json` or `locales/en/messages.json`) "
+                    "No internationalization files were detected in scanned directories. While not required, keeping user-facing strings in i18n (e.g., `src/i18n/messages.json` or `locales/en/messages.json`) "
                     "can make text adaptations more consistent across events."
                 ),
                 "labels": ["enhancement", "i18n", "event-customization"],
@@ -362,67 +402,81 @@ Respond in JSON format with keys: framework, visual_elements_location, priority_
 
         # Avoid enforcing hero images; suggest alternative adaptation levers
         if not has_css_vars:
+            logger.info("Creating suggestion: No CSS variables detected - recommending theme tokens")
             suggestions.append({
+                "key": "css_variables",
                 "title": "Add CSS variables for theme tokens (colors, spacing)",
                 "body": (
-                    "No CSS custom properties were detected (e.g., `:root { --color-primary: ... }`). Defining theme tokens lets the tool adjust palettes "
+                    "No CSS custom properties were detected in CSS files (e.g., `:root { --color-primary: ... }`). Defining theme tokens lets the tool adjust palettes "
                     "for events without relying on hero images."
                 ),
                 "labels": ["enhancement", "css", "theming"],
             })
 
         if not has_event_data_attrs and not selector:
+            logger.info("Creating suggestion: No event data attributes or selector found - recommending element marking")
             suggestions.append({
+                "key": "data_attrs",
                 "title": "Add data attributes to mark adaptable elements",
                 "body": (
-                    "Consider annotating adaptable UI with attributes like `[data-event-adaptable]`, `[data-event-role='banner']`, or `[data-event-color]` "
+                    "No event-specific data attributes found in HTML/JSX files and no selector provided. Consider annotating adaptable UI with attributes like `[data-event-adaptable]`, `[data-event-role='banner']`, or `[data-event-color]` "
                     "to help the analyzer and decorators target elements precisely."
                 ),
                 "labels": ["enhancement", "frontend", "event-customization"],
             })
 
         if svg_count == 0:
+            logger.info("Creating suggestion: No SVG assets found - recommending SVG usage for recoloring")
             suggestions.append({
+                "key": "svg_usage",
                 "title": "Prefer SVG for logos/illustrations to enable recoloring",
                 "body": (
-                    "No SVG assets were detected. Using SVG for logos/illustrations enables clean recoloring and decorations during events."
+                    "No SVG assets were detected in scanned directories. Using SVG for logos/illustrations enables clean recoloring and decorations during events."
                 ),
                 "labels": ["enhancement", "images", "svg"],
             })
 
         if not has_global_css:
+            logger.info("Creating suggestion: No global CSS files found - recommending global stylesheet")
             suggestions.append({
+                "key": "global_css",
                 "title": "Ensure a global stylesheet or theme entrypoint exists",
                 "body": (
-                    "A global stylesheet (e.g., `src/styles/global.css` or `app/globals.css`) makes it easier to apply event-wide tweaks (palette, typography)."
+                    "No global stylesheet detected in scanned files (e.g., `src/styles/global.css` or `app/globals.css`). A global stylesheet makes it easier to apply event-wide tweaks (palette, typography)."
                 ),
                 "labels": ["enhancement", "css", "theming"],
             })
 
         if not has_marker_styles:
+            logger.info("Creating suggestion: No CSS marker styles found - recommending marker styling")
             suggestions.append({
+                "key": "marker_styles",
                 "title": "Style list markers (e.g., vignettes) to allow event variations",
                 "body": (
-                    "No `::marker` styles detected. Adding list/bullet marker styles enables subtle event adaptations without layout changes."
+                    "No `::marker` styles detected in CSS files. Adding list/bullet marker styles enables subtle event adaptations without layout changes."
                 ),
                 "labels": ["enhancement", "css"],
             })
 
         # Favicon / touch icons
         if has_favicon:
+            logger.info("Creating suggestion: Favicon assets found - recommending event variants")
             suggestions.append({
+                "key": "favicon_variants",
                 "title": "Provide event-ready favicon/touch icon variants",
                 "body": (
-                    "Favicon assets detected. Consider keeping event variants (e.g., `favicon-halloween.png`, `apple-touch-icon-xmas.png`) "
+                    "Favicon assets detected in scanned files. Consider keeping event variants (e.g., `favicon-halloween.png`, `apple-touch-icon-xmas.png`) "
                     "and a small switch mechanism to apply seasonal icons. Keep changes subtle and non-intrusive."
                 ),
                 "labels": ["enhancement", "assets", "events"],
             })
         else:
+            logger.info("Creating suggestion: No favicon assets found - recommending favicon establishment")
             suggestions.append({
+                "key": "favicon_establish",
                 "title": "Establish predictable favicon/touch icon assets",
                 "body": (
-                    "No favicon/touch icon assets were detected. Establishing predictable files (e.g., `public/favicon.png`, `public/apple-touch-icon.png`) "
+                    "No favicon/touch icon assets were detected in scanned directories. Establishing predictable files (e.g., `public/favicon.png`, `public/apple-touch-icon.png`) "
                     "allows non-intrusive event variants to be swapped in."
                 ),
                 "labels": ["enhancement", "assets"],
@@ -430,28 +484,34 @@ Respond in JSON format with keys: framework, visual_elements_location, priority_
 
         # Open Graph social preview image
         if has_og_image:
+            logger.info("Creating suggestion: Open Graph image found - recommending seasonal variants")
             suggestions.append({
+                "key": "og_variants",
                 "title": "Provide seasonal Open Graph social preview variants",
                 "body": (
-                    "An `og:image` meta tag was detected. Consider providing seasonal social preview images (e.g., subtle hat or snow accents) "
+                    "An `og:image` meta tag was detected in HTML files. Consider providing seasonal social preview images (e.g., subtle hat or snow accents) "
                     "that can be swapped during events without intrusive UI changes."
                 ),
                 "labels": ["enhancement", "seo", "assets"],
             })
         else:
+            logger.info("Creating suggestion: No Open Graph image found - recommending OG image addition")
             suggestions.append({
+                "key": "og_add",
                 "title": "Add Open Graph image meta for social sharing",
                 "body": (
-                    "No `og:image` meta tag was detected. Adding one enables tasteful, non-intrusive seasonal variants for social sharing cards."
+                    "No `og:image` meta tag was detected in HTML files. Adding one enables tasteful, non-intrusive seasonal variants for social sharing cards."
                 ),
                 "labels": ["enhancement", "seo"],
             })
 
         if not selector:
+            logger.info("Creating suggestion: No selector provided - recommending CSS selectors for targeting")
             suggestions.append({
+                "key": "selectors_guidance",
                 "title": "Add CSS selectors or data-attributes to mark event-adaptable elements",
                 "body": (
-                    "No `defaults.selector` was provided. Adding selectors like `img.hero, .banner-image, [data-event-adaptable]` helps the analyzer "
+                    "No `defaults.selector` was provided in configuration. Adding selectors like `img.hero, .banner-image, [data-event-adaptable]` helps the analyzer "
                     "target the right UI elements and improves adaptation precision."
                 ),
                 "labels": ["enhancement", "frontend", "event-customization"],
@@ -462,7 +522,9 @@ Respond in JSON format with keys: framework, visual_elements_location, priority_
         if isinstance(ai_analysis, dict):
             considerations = ai_analysis.get("considerations")
         if considerations and isinstance(considerations, str) and len(considerations) > 10:
+            logger.info("Creating suggestion: AI analysis provided specific considerations")
             suggestions.append({
+                "key": "ai_considerations",
                 "title": "Apply analyzer considerations to improve event readiness",
                 "body": considerations,
                 "labels": ["enhancement", "code-health"],

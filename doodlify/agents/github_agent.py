@@ -81,7 +81,7 @@ class GitHubAgent:
             chat_generator=OpenAIChatGenerator(api_key=Secret.from_token(self.openai_api_key)),
             system_prompt="""
             You can operate GitHub repositories: read files, create/search issues, create branches/PRs. 
-            Queries to "search_issues" must include 'is:issue state:open' as prefix.
+            When invoking tool "search_issues" you must include 'is:issue state:open' as prefix.
             Be concise.
             """,
             tools=self.tools,

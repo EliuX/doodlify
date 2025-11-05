@@ -131,6 +131,29 @@ GIT_BRANCH_CHANGES_TARGET=main  # Target branch for PRs
 #### `defaults`
 - **selector**: CSS selector to match elements (e.g., `"img.hero, main > img"`)
 - **branchPrefix**: Prefix for event branches (e.g., `"event/"` → `"event/halloween-2024"`)
+- **reportSuggestions**: Boolean map controlling which suggestions are auto-filed as GitHub issues. Use keys below. Default enables core items and disables optional ones.
+
+Example:
+```json
+{
+  "defaults": {
+    "reportSuggestions": {
+      "i18n": false,
+      "css_variables": true,
+      "data_attrs": true,
+      "svg_usage": true,
+      "global_css": true,
+      "marker_styles": true,
+      "favicon_variants": true,
+      "favicon_establish": true,
+      "og_variants": true,
+      "og_add": true,
+      "selectors_guidance": true,
+      "ai_considerations": true
+    }
+  }
+}
+```
 
 #### `events[]`
 - **id**: Unique identifier (used for branch names)
@@ -158,6 +181,31 @@ doodlify analyze
 - Source: Heuristics (missing i18n files, missing image assets, missing selectors) and AI considerations
 - Tracking: Stored in `config-lock.json` under `reported_suggestions` with a fingerprint to avoid duplicates
 - Permissions: Requires Personal Access Token with `Issues: Read and write`
+
+##### Suggestion keys and defaults
+
+The analyzer attaches a stable `key` to each suggestion. The orchestrator consults `defaults.reportSuggestions[key]` to decide if it should be filed.
+
+- Optional by default (false):
+  - `i18n` → "Optional: Centralize user-facing copy in i18n files"
+
+- Core by default (true):
+  - `css_variables` → Add CSS variables for theme tokens (colors, spacing)
+  - `data_attrs` → Add data attributes to mark adaptable elements
+  - `svg_usage` → Prefer SVG for logos/illustrations to enable recoloring
+  - `global_css` → Ensure a global stylesheet or theme entrypoint exists
+  - `marker_styles` → Style list markers (e.g., vignettes) to allow event variations
+  - `favicon_variants` → Provide event-ready favicon/touch icon variants (if favicon assets exist)
+  - `favicon_establish` → Establish predictable favicon/touch icon assets (if none exist)
+  - `og_variants` → Provide seasonal Open Graph social preview variants (if `og:image` exists)
+  - `og_add` → Add Open Graph image meta for social sharing (if `og:image` missing)
+  - `selectors_guidance` → Add CSS selectors or data-attributes to mark event-adaptable elements (if no selector in config)
+  - `ai_considerations` → Apply analyzer considerations to improve event readiness
+
+You can override any of these in your `config.json` under `defaults.reportSuggestions`.
+
+CLI override:
+- Pass `--report-all` to `doodlify analyze` or `doodlify run` to report everything (including those set to false). These will be logged as OPTIONAL when filed due to the flag.
 
 ### 2. Process Phase
 ```bash

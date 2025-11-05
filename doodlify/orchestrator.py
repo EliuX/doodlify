@@ -26,11 +26,15 @@ class Orchestrator:
         github_token: str,
         openai_api_key: str,
         repo_name: str,
+        target_branch: Optional[str] = None,
+        report_all_suggestions: bool = False,
     ):
         self.config_manager = config_manager
         self.github_token = github_token
         self.openai_api_key = openai_api_key
         self.repo_name = repo_name
+        self.target_branch = target_branch
+        self.report_all_suggestions = report_all_suggestions
         
         # Extract owner and repo from repo_name
         self.owner, self.repo = repo_name.split('/')
@@ -155,12 +159,32 @@ class Orchestrator:
 
         # Initialize GitHub agent
         github_agent = GitHubAgent(self.github_token, self.openai_api_key)
+        # Controls for suggestion reporting
+        cfg = self.config_manager.config
+        report_map = dict(getattr(cfg.defaults, "reportSuggestions", {}) or {})
+        report_all = bool(self.report_all_suggestions)
         
         for s in suggestions:
             title = s.get("title") or "Improvement suggestion"
             body = s.get("body") or ""
             labels = s.get("labels") or ["enhancement"]
             fp = self._fingerprint(title, body)
+            key = s.get("key")
+
+            # Decide if this suggestion should be reported based on key map or report-all
+            should_report = report_all or (report_map.get(key, True))
+            if not should_report:
+                print(f"- Skipping suggestion (disabled by defaults.reportSuggestions): {title}")
+                print(f"  Key: {key or 'unknown'}  |  Value: false")
+                continue
+
+            # If reporting due to --report-all while map=false, mark as optional in logs
+            if report_all and not report_map.get(key, True):
+                print(f"- Filing OPTIONAL suggestion due to --report-all: {title}")
+                print(f"  Key: {key or 'unknown'}  |  defaults.reportSuggestions[{key}] = false")
+            else:
+                print(f"- Filing suggestion as issue: {title}")
+                print("  Reason: Enabled in defaults.reportSuggestions or default behavior.")
 
             if fp in reported_fps:
                 continue

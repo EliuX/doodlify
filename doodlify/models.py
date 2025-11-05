@@ -19,6 +19,28 @@ class DefaultsConfig(BaseModel):
     """Default configuration for events."""
     selector: Optional[str] = Field(None, description="CSS selector for elements to modify")
     branchPrefix: Optional[str] = Field(None, description="Prefix for event branch names")
+    reportSuggestions: Dict[str, bool] = Field(
+        default_factory=lambda: {
+            # Optional by default
+            "i18n": False,
+            # Core suggestions enabled by default
+            "css_variables": True,
+            "data_attrs": True,
+            "svg_usage": True,
+            "global_css": True,
+            "marker_styles": True,
+            "favicon_variants": True,
+            "favicon_establish": True,
+            "og_variants": True,
+            "og_add": True,
+            "selectors_guidance": True,
+            "ai_considerations": True,
+        },
+        description=(
+            "Boolean map controlling which suggestions should be filed as GitHub issues. "
+            "Keys correspond to analyzer suggestion keys."
+        ),
+    )
 
 
 class EventConfig(BaseModel):

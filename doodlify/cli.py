@@ -48,7 +48,13 @@ def cli():
     help='Path to configuration file',
     type=click.Path(exists=True)
 )
-def analyze(config: str):
+@click.option(
+    '--report-all',
+    is_flag=True,
+    default=False,
+    help='Report all suggestions (including those disabled in defaults.reportSuggestions)'
+)
+def analyze(config: str, report_all: bool):
     """
     Analyze the project and validate configuration.
 
@@ -68,6 +74,7 @@ def analyze(config: str):
             github_token=github_token,
             openai_api_key=openai_api_key,
             repo_name=repo_name,
+            report_all_suggestions=report_all,
         )
 
         # Run analysis
@@ -233,7 +240,13 @@ def clear(config: str, event_id: Optional[str]):
     help='Path to configuration file',
     type=click.Path(exists=True)
 )
-def run(config: str):
+@click.option(
+    '--report-all',
+    is_flag=True,
+    default=False,
+    help='Report all suggestions (including those disabled in defaults.reportSuggestions)'
+)
+def run(config: str, report_all: bool):
     """
     Run the complete workflow: analyze -> process -> push.
 
@@ -254,7 +267,8 @@ def run(config: str):
             github_token=github_token,
             openai_api_key=openai_api_key,
             repo_name=repo_name,
-            target_branch=target_branch
+            target_branch=target_branch,
+            report_all_suggestions=report_all,
         )
 
         # Run analyze
