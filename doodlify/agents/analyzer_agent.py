@@ -5,6 +5,7 @@ Analyzer agent using Haystack AI for codebase analysis.
 import re
 import json
 import logging
+import os
 from pathlib import Path
 from typing import List, Dict, Set, Optional
 from openai import OpenAI
@@ -116,10 +117,15 @@ class AnalyzerAgent:
         suggestions = self._build_improvement_suggestions(ctx)
         logger.info(f"Generated {len(suggestions)} improvement suggestions")
 
+        # Normalize to repo-root relative paths so sources only guide discovery
+        norm_images = self._normalize_paths(repo_path, sources, image_files)
+        norm_texts = self._normalize_paths(repo_path, sources, text_files)
+        norm_selectors = self._normalize_paths(repo_path, sources, selector_matches if selector_matches else [])
+
         return {
-            "files_of_interest": selector_matches if selector_matches else image_files + text_files,
-            "image_files": image_files,
-            "text_files": text_files,
+            "files_of_interest": norm_selectors if selector_matches else (norm_images + norm_texts),
+            "image_files": norm_images,
+            "text_files": norm_texts,
             "selectors_found": self._extract_selectors_from_files(frontend_files),
             "notes": ai_analysis,
             "improvement_suggestions": suggestions,
@@ -651,3 +657,70 @@ class AnalyzerAgent:
             except Exception:
                 continue
         return False
+
+    # --- Path normalization helpers ---
+    def _normalize_paths(self, repo_path: Path, sources: List[str], items: List[str]) -> List[str]:
+        """Normalize a list of path-like items to repo-root relative strings.
+        - If item is an absolute or repo-absolute path, convert to relative to repo_path.
+        - If item is a web-style path (e.g., "/images/foo.png"), strip leading slash and try resolution under repo and sources.
+        - If no candidate exists, return the normalized (slash-stripped) string to keep intent.
+        """
+        out: List[str] = []
+        for raw in items:
+            try:
+                p = Path(str(raw))
+                # Already a file path on disk
+                if p.exists():
+                    try:
+                        rel = str(p.relative_to(repo_path))
+                    except Exception:
+                        # If it is under sources but not directly relative, try manual strip
+                        rel = str(p).replace(str(repo_path) + os.sep, "") if str(p).startswith(str(repo_path)) else p.name
+                    out.append(rel)
+                    continue
+                # Treat as repo-web or relative string
+                candidate = self._resolve_repo_file(repo_path, sources, str(raw))
+                if candidate and candidate.exists():
+                    try:
+                        out.append(str(candidate.relative_to(repo_path)))
+                    except Exception:
+                        out.append(candidate.name)
+                else:
+                    # Keep normalized intent without leading slash
+                    out.append(str(raw).lstrip('/'))
+            except Exception:
+                out.append(str(raw).lstrip('/'))
+        # De-duplicate while preserving order
+        seen = set()
+        deduped = []
+        for s in out:
+            if s not in seen:
+                seen.add(s)
+                deduped.append(s)
+        return deduped
+
+    def _resolve_repo_file(self, repo_path: Path, sources: List[str], raw_path: str) -> Path:
+        """Resolve a path string to a file within the repo, trying common locations.
+        Sources guide discovery; the returned path is always repo-root based if found.
+        """
+        normalized = str(raw_path or "").strip()
+        if not normalized:
+            return repo_path / ""
+        # Strip leading slash from web paths
+        normalized = normalized.lstrip('/')
+        candidates: List[Path] = []
+        # 1) Repo-root
+        candidates.append(repo_path / normalized)
+        # 2) Try each source root
+        for s in (sources or []):
+            s_norm = str(s).strip().lstrip('./')
+            candidates.append(repo_path / s_norm / normalized)
+        # 3) Heuristic UI root
+        candidates.append(repo_path / 'web-ui' / 'src' / normalized)
+        for c in candidates:
+            try:
+                if c.exists():
+                    return c
+            except Exception:
+                continue
+        return candidates[0]

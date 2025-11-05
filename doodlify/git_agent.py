@@ -96,6 +96,73 @@ class GitAgent:
         else:
             raise ValueError("No changes to commit")
     
+    def find_file(self, path_str: str, sources: Optional[List[str]] = None) -> Path:
+        """Find file in repository.
+        
+        Attempts resolution in this order:
+        - <repo>/<normalized>
+        - <repo>/<source>/<normalized>
+        - <repo>/<source>/web-ui/src/<normalized>
+        - <repo>/web-ui/src/<normalized>
+        - <repo>/public/<normalized>
+        - <repo>/<source>/public/<normalized>
+        - rglob for the normalized subpath
+        - rglob for the filename only
+        """
+        if not self.repo:
+            raise RuntimeError("Repository not initialized")
+        
+        normalized = path_str.strip().lstrip('/').lstrip('./')
+        candidates = []
+        
+        # 0) Repo-root direct
+        candidates.append(self.repo_path / normalized)
+
+        if sources:
+            for s in sources:
+                # Normalize source root
+                s_norm = str(s).strip().lstrip('./')
+                candidates.append(self.repo_path / s_norm / normalized)
+                # Also try nested web-ui/src under each source
+                candidates.append(self.repo_path / s_norm / 'web-ui' / 'src' / normalized)
+                # Also try public roots under each source
+                candidates.append(self.repo_path / s_norm / 'public' / normalized)
+        
+        # 4) Heuristic: common UI root if present
+        ui_root = self.repo_path / 'web-ui' / 'src'
+        if ui_root.exists():
+            candidates.append(ui_root / normalized)
+        # 4b) Heuristic: common public root if present at repo root
+        public_root = self.repo_path / 'public'
+        if public_root.exists():
+            candidates.append(public_root / normalized)
+        
+        # 5) Fallback: attempt rglob by normalized subpath, then by filename
+        try:
+            # Exact subpath search (e.g., images/foo.png anywhere)
+            for hit in self.repo_path.rglob(normalized):
+                if hit.is_file():
+                    return hit
+        except Exception:
+            pass
+        try:
+            # Filename-only search as last resort
+            name = Path(normalized).name
+            for hit in self.repo_path.rglob(name):
+                if hit.is_file():
+                    return hit
+        except Exception:
+            pass
+
+        for c in candidates:
+            try:
+                if c.exists():
+                    return c
+            except Exception:
+                continue
+        # Return first candidate even if it doesn't exist; caller will handle
+        return candidates[0] if candidates else (self.repo_path / normalized)
+    
     def push_branch(self, branch_name: str, force: bool = False) -> None:
         """Push branch to remote."""
         if not self.repo:

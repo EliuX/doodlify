@@ -366,6 +366,14 @@ class Orchestrator:
                 completed_at=datetime.utcnow().isoformat()
             )
             
+            # Update last executed marker on the event
+            lock = self.config_manager.lock
+            for e in lock.events:
+                if e.id == event.id:
+                    e.last_executed = datetime.utcnow().isoformat()
+                    break
+            self.config_manager.save_lock()
+            
             print(f"\n✓ Event processed successfully: {event.name}")
             return True
             
@@ -384,30 +392,50 @@ class Orchestrator:
         """Process image files for an event."""
         modified = []
         
+        # Use configured sources only to guide discovery (paths remain repo-root relative)
+        config = self.config_manager.config
+        sources = getattr(config.project, "sources", []) or []
+        
+        # Optional: retain file_status tracking map (not used for skip decisions)
+        event_lock = self.config_manager.get_event_lock(event.id)
+        file_status = dict(getattr(event_lock.progress, "file_status", {}) or {})
+        
         for image_path_str in image_paths:
-            # Convert to Path relative to repo
-            image_path = Path(image_path_str)
+            # Resolve to an absolute path inside the repo (handles leading '/')
+            full_path = self.git_agent.find_file(str(image_path_str), sources=sources)
+            try:
+                rel_path = str(full_path.relative_to(self.git_agent.repo_path))
+            except Exception:
+                rel_path = str(image_path_str).lstrip('/')
             
-            # Check if it's a relative path or needs to be found in repo
-            if not image_path.is_absolute():
-                full_path = self.git_agent.get_file_path(str(image_path))
-            else:
-                full_path = image_path
+            # Skip if backup exists (idempotence via on-disk evidence)
+            backup_full = full_path.with_suffix(full_path.suffix + '.original')
+            if backup_full.exists():
+                print(f"  ⏭️  Skipping (backup exists): {rel_path}")
+                # Optionally record as processed if not present
+                if file_status.get(rel_path, {}).get("status") != "processed":
+                    file_status[rel_path] = {"status": "processed", "updated_at": datetime.utcnow().isoformat()}
+                    self.config_manager.update_event_progress(event.id, file_status=file_status)
+                continue
             
             if not full_path.exists():
-                print(f"  ⚠️  Skipping missing file: {image_path}")
+                print(f"  ⚠️  Skipping missing file: {rel_path}")
+                file_status[rel_path] = {"status": "missing", "updated_at": datetime.utcnow().isoformat()}
+                self.config_manager.update_event_progress(event.id, file_status=file_status)
                 continue
             
             if not self.image_agent.is_supported_format(full_path):
-                print(f"  ⚠️  Skipping unsupported format: {image_path}")
+                print(f"  ⚠️  Skipping unsupported format: {rel_path}")
+                file_status[rel_path] = {"status": "unsupported", "updated_at": datetime.utcnow().isoformat()}
+                self.config_manager.update_event_progress(event.id, file_status=file_status)
                 continue
             
             try:
-                # Backup original
-                backup_rel_path = self.git_agent.backup_file(str(image_path))
-                print(f"  📦 Backed up: {image_path}")
+                # Backup original expects repo-relative path
+                backup_rel_path = self.git_agent.backup_file(rel_path)
+                print(f"  📦 Backed up: {rel_path}")
                 
-                # Transform image
+                # Transform image in place
                 self.image_agent.transform_image(
                     full_path,
                     event.name,
@@ -415,12 +443,20 @@ class Orchestrator:
                     output_path=full_path
                 )
                 
-                modified.append(str(image_path))
+                modified.append(rel_path)
                 modified.append(backup_rel_path)
-                print(f"  ✓ Transformed: {image_path}")
+                print(f"  ✓ Transformed: {rel_path}")
+                
+                # Update file status and modified files incrementally
+                file_status[rel_path] = {"status": "processed", "updated_at": datetime.utcnow().isoformat()}
+                current_mod = set(event_lock.progress.modified_files or [])
+                current_mod.update([rel_path, backup_rel_path])
+                self.config_manager.update_event_progress(event.id, file_status=file_status, modified_files=sorted(current_mod))
                 
             except Exception as e:
-                print(f"  ✗ Failed to process {image_path}: {e}")
+                print(f"  ✗ Failed to process {rel_path}: {e}")
+                file_status[rel_path] = {"status": "skipped", "updated_at": datetime.utcnow().isoformat(), "details": str(e)}
+                self.config_manager.update_event_progress(event.id, file_status=file_status)
         
         return modified
     
@@ -428,24 +464,57 @@ class Orchestrator:
         """Process text/i18n files for an event."""
         modified = []
         
+        # Use configured sources only to guide discovery (paths remain repo-root relative)
+        config = self.config_manager.config
+        sources = getattr(config.project, "sources", []) or []
+        
+        event_lock = self.config_manager.get_event_lock(event.id)
+        file_status = dict(getattr(event_lock.progress, "file_status", {}) or {})
+        
         for text_path_str in text_paths:
-            text_path = Path(text_path_str)
+            full_path = self.git_agent.find_file(str(text_path_str), sources=sources)
+            try:
+                rel_path = str(full_path.relative_to(self.git_agent.repo_path))
+            except Exception:
+                rel_path = str(text_path_str).lstrip('/')
             
-            if not text_path.is_absolute():
-                full_path = self.git_agent.get_file_path(str(text_path))
-            else:
-                full_path = text_path
+            # Skip if backup exists (idempotence via on-disk evidence)
+            backup_full = full_path.with_suffix(full_path.suffix + '.original')
+            if backup_full.exists():
+                print(f"  ⏭️  Skipping (backup exists): {rel_path}")
+                if file_status.get(rel_path, {}).get("status") != "processed":
+                    file_status[rel_path] = {"status": "processed", "updated_at": datetime.utcnow().isoformat()}
+                    self.config_manager.update_event_progress(event.id, file_status=file_status)
+                continue
             
             if not full_path.exists():
-                print(f"  ⚠️  Skipping missing file: {text_path}")
+                print(f"  ⚠️  Skipping missing file: {rel_path}")
+                # Log likely search locations for debugging
+                try:
+                    repo_root = self.git_agent.repo_path
+                    searched = [str(repo_root / rel_path)]
+                    for s in sources:
+                        s_norm = str(s).strip().lstrip('./')
+                        searched.append(str(repo_root / s_norm / rel_path))
+                        searched.append(str(repo_root / s_norm / 'web-ui' / 'src' / rel_path))
+                        searched.append(str(repo_root / s_norm / 'public' / rel_path))
+                    searched.append(str(repo_root / 'web-ui' / 'src' / rel_path))
+                    searched.append(str(repo_root / 'public' / rel_path))
+                    print("    Tried:")
+                    for loc in searched[:8]:
+                        print(f"     - {loc}")
+                except Exception:
+                    pass
+                file_status[rel_path] = {"status": "missing", "updated_at": datetime.utcnow().isoformat()}
+                self.config_manager.update_event_progress(event.id, file_status=file_status)
                 continue
             
             try:
                 # Backup original
-                backup_rel_path = self.git_agent.backup_file(str(text_path))
-                print(f"  📦 Backed up: {text_path}")
+                backup_rel_path = self.git_agent.backup_file(rel_path)
+                print(f"  📦 Backed up: {rel_path}")
                 
-                # Adapt text file
+                # Adapt text file in place
                 self.text_agent.adapt_i18n_file(
                     full_path,
                     event.name,
@@ -453,12 +522,19 @@ class Orchestrator:
                     output_path=full_path
                 )
                 
-                modified.append(str(text_path))
+                modified.append(rel_path)
                 modified.append(backup_rel_path)
-                print(f"  ✓ Adapted: {text_path}")
+                print(f"  ✓ Adapted: {rel_path}")
+                
+                file_status[rel_path] = {"status": "processed", "updated_at": datetime.utcnow().isoformat()}
+                current_mod = set(event_lock.progress.modified_files or [])
+                current_mod.update([rel_path, backup_rel_path])
+                self.config_manager.update_event_progress(event.id, file_status=file_status, modified_files=sorted(current_mod))
                 
             except Exception as e:
-                print(f"  ✗ Failed to process {text_path}: {e}")
+                print(f"  ✗ Failed to process {rel_path}: {e}")
+                file_status[rel_path] = {"status": "skipped", "updated_at": datetime.utcnow().isoformat(), "details": str(e)}
+                self.config_manager.update_event_progress(event.id, file_status=file_status)
         
         return modified
     
@@ -566,11 +642,13 @@ Generated by Doodlify 🎨
                     import re
                     import json
                     try:
+                        # Look for JSON in response
                         json_match = re.search(r'\{[^}]*"pr_number"[^}]*\}', final_message.content)
                         if json_match:
                             result = json.loads(json_match.group())
                             pr_number = result.get("pr_number")
                     except:
+                        # Fallback: look for issue number pattern
                         match = re.search(r'#(\d+)', final_message.content)
                         if match:
                             pr_number = int(match.group(1))

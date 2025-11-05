@@ -92,6 +92,13 @@ class EventProgress(BaseModel):
     error: Optional[str] = Field(None, description="Error message if failed")
     started_at: Optional[str] = Field(None, description="When processing started")
     completed_at: Optional[str] = Field(None, description="When processing completed")
+    file_status: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Per-file processing status keyed by repo-relative path. "
+            "Each value is a dict: {status: processed|unsupported|missing|skipped, updated_at: ISO8601, details?: str}."
+        ),
+    )
 
 
 class EventLock(EventConfig):
