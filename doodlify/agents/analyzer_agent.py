@@ -409,148 +409,103 @@ class AnalyzerAgent:
         """Create optional, best-practice suggestions to improve adaptability.
 
         Context keys:
-          - image_files: List[str]
-          - text_files: List[str]
-          - selector: Optional[str]
-          - ai_analysis: Dict[str, any]
-          - has_css_vars: bool
-          - has_event_data_attrs: bool
-          - svg_count: int
-          - has_global_css: bool
-          - has_marker_styles: bool
-          - has_favicon: bool
-          - has_og_image: bool
+          - image_files, text_files, selector, ai_analysis,
+          - has_css_vars, has_event_data_attrs, svg_count,
+          - has_global_css, has_marker_styles, has_favicon, has_og_image
         """
         suggestions: List[Dict[str, any]] = []
 
-        image_files = ctx.get("image_files", [])
-        text_files = ctx.get("text_files", [])
+        image_files = ctx.get("image_files", []) or []
+        text_files = ctx.get("text_files", []) or []
         selector = ctx.get("selector")
-        ai_analysis = ctx.get("ai_analysis", {})
+        ai_analysis = ctx.get("ai_analysis", {}) or {}
         has_css_vars = bool(ctx.get("has_css_vars"))
         has_event_data_attrs = bool(ctx.get("has_event_data_attrs"))
-        svg_count = int(ctx.get("svg_count", 0))
+        svg_count = int(ctx.get("svg_count") or 0)
         has_global_css = bool(ctx.get("has_global_css"))
         has_marker_styles = bool(ctx.get("has_marker_styles"))
         has_favicon = bool(ctx.get("has_favicon"))
         has_og_image = bool(ctx.get("has_og_image"))
 
-        # i18n is not required, but can help centralize copy
-        if not text_files:
-            logger.info("Creating suggestion: No i18n files found - recommending centralized text management")
+        # New: format guidance suggestions
+        lower_images = [str(p).lower() for p in image_files]
+        raster_non_png = [p for p in lower_images if p.endswith('.jpg') or p.endswith('.jpeg') or p.endswith('.webp')]
+        svg_assets = [p for p in lower_images if p.endswith('.svg')]
+        gif_assets = [p for p in lower_images if p.endswith('.gif')]
+
+        if raster_non_png:
+            logger.info("Creating suggestion: Normalize raster assets (JPG/WEBP) to PNG for reliable overlays")
+            examples = sorted(list(set(raster_non_png)))[:5]
+            ex_txt = "\n- ".join(examples)
+            body = (
+                "Found raster assets in JPG/JPEG/WEBP. PNG is preferred for event decorations due to reliable transparency and overlays.\n"
+                "Consider converting these to PNG (keeps quality, enables consistent compositing)."
+            )
+            if ex_txt:
+                body += "\n\nExample occurrences (up to 5):\n- " + ex_txt
             suggestions.append({
-                "key": "i18n",
-                "title": "Optional: Centralize user-facing copy in i18n files",
-                "body": (
-                    "No internationalization files were detected in scanned directories. While not required, keeping user-facing strings in i18n (e.g., `src/i18n/messages.json` or `locales/en/messages.json`) "
-                    "can make text adaptations more consistent across events."
-                ),
-                "labels": ["enhancement", "i18n", "event-customization"],
+                "key": "raster_normalize",
+                "title": "Normalize raster assets (JPG/WEBP) to PNG for event decoration",
+                "body": body,
+                "labels": ["enhancement", "images", "assets"],
             })
 
-        # Avoid enforcing hero images; suggest alternative adaptation levers
-        if not has_css_vars:
-            logger.info("Creating suggestion: No CSS variables detected - recommending theme tokens")
+        if svg_assets or gif_assets:
+            logger.info("Creating suggestion: Provide PNG fallbacks for vector/animated assets when event variants are needed")
+            body_parts: List[str] = []
+            if svg_assets:
+                body_parts.append("SVGs are vector; keep as-is. Provide curated PNG fallbacks only when raster decoration is required.")
+            if gif_assets:
+                body_parts.append("GIFs are animated; automated overlays are not supported. Provide a static PNG fallback if a themed alternative is required.")
             suggestions.append({
-                "key": "css_variables",
-                "title": "Add CSS variables for theme tokens (colors, spacing)",
-                "body": (
-                    "No CSS custom properties were detected in CSS files (e.g., `:root { --color-primary: ... }`). Defining theme tokens lets the tool adjust palettes "
-                    "for events without relying on hero images."
-                ),
-                "labels": ["enhancement", "css", "theming"],
+                "key": "vector_animated_guidance",
+                "title": "Guidance: Provide PNG fallbacks for SVG/GIF when themed variants are needed",
+                "body": "\n\n".join(body_parts),
+                "labels": ["documentation", "images"],
             })
 
-        if not has_event_data_attrs and not selector:
-            logger.info("Creating suggestion: No event data attributes or selector found - recommending element marking")
-            suggestions.append({
-                "key": "data_attrs",
-                "title": "Add data attributes to mark adaptable elements",
-                "body": (
-                    "No event-specific data attributes found in HTML/JSX files and no selector provided. Consider annotating adaptable UI with attributes like `[data-event-adaptable]`, `[data-event-role='banner']`, or `[data-event-color]` "
-                    "to help the analyzer and decorators target elements precisely."
-                ),
-                "labels": ["enhancement", "frontend", "event-customization"],
-            })
-
-        if svg_count == 0:
-            logger.info("Creating suggestion: No SVG assets found - recommending SVG usage for recoloring")
-            suggestions.append({
-                "key": "svg_usage",
-                "title": "Prefer SVG for logos/illustrations to enable recoloring",
-                "body": (
-                    "No SVG assets were detected in scanned directories. Using SVG for logos/illustrations enables clean recoloring and decorations during events."
-                ),
-                "labels": ["enhancement", "images", "svg"],
-            })
-
-        if not has_global_css:
-            logger.info("Creating suggestion: No global CSS files found - recommending global stylesheet")
-            suggestions.append({
-                "key": "global_css",
-                "title": "Ensure a global stylesheet or theme entrypoint exists",
-                "body": (
-                    "No global stylesheet detected in scanned files (e.g., `src/styles/global.css` or `app/globals.css`). A global stylesheet makes it easier to apply event-wide tweaks (palette, typography)."
-                ),
-                "labels": ["enhancement", "css", "theming"],
-            })
-
+        # Existing suggestions
         if not has_marker_styles:
             logger.info("Creating suggestion: No CSS marker styles found - recommending marker styling")
             suggestions.append({
                 "key": "marker_styles",
                 "title": "Style list markers (e.g., vignettes) to allow event variations",
-                "body": (
-                    "No `::marker` styles detected in CSS files. Adding list/bullet marker styles enables subtle event adaptations without layout changes."
-                ),
+                "body": "No `::marker` styles detected in CSS files. Adding list/bullet marker styles enables subtle event adaptations without layout changes.",
                 "labels": ["enhancement", "css"],
             })
 
-        # Favicon / touch icons
-        if has_favicon:
-            logger.info("Creating suggestion: Favicon assets found - recommending event variants")
-            suggestions.append({
-                "key": "favicon_variants",
-                "title": "Provide event-ready favicon/touch icon variants",
-                "body": (
-                    "Favicon assets detected in scanned files. Consider keeping event variants (e.g., `favicon-halloween.png`, `apple-touch-icon-xmas.png`) "
-                    "and a small switch mechanism to apply seasonal icons. Keep changes subtle and non-intrusive."
-                ),
-                "labels": ["enhancement", "assets", "events"],
-            })
-        else:
+        if not has_favicon:
             logger.info("Creating suggestion: No favicon assets found - recommending favicon establishment")
             suggestions.append({
                 "key": "favicon_establish",
                 "title": "Establish predictable favicon/touch icon assets",
-                "body": (
-                    "No favicon/touch icon assets were detected in scanned directories. Establishing predictable files (e.g., `public/favicon.png`, `public/apple-touch-icon.png`) "
-                    "allows non-intrusive event variants to be swapped in."
-                ),
+                "body": "No favicon/touch icon assets were detected in scanned directories. Establishing predictable files (e.g., `public/favicon.png`, `public/apple-touch-icon.png`) allows non-intrusive event variants to be swapped in.",
                 "labels": ["enhancement", "assets"],
             })
-
-        # Open Graph social preview image
-        if has_og_image:
-            logger.info("Creating suggestion: Open Graph image found - recommending seasonal variants")
-            suggestions.append({
-                "key": "og_variants",
-                "title": "Provide seasonal Open Graph social preview variants",
-                "body": (
-                    "An `og:image` meta tag was detected in HTML files. Consider providing seasonal social preview images (e.g., subtle hat or snow accents) "
-                    "that can be swapped during events without intrusive UI changes."
-                ),
-                "labels": ["enhancement", "seo", "assets"],
-            })
         else:
+            logger.info("Creating suggestion: Favicon assets found - recommending event variants")
+            suggestions.append({
+                "key": "favicon_variants",
+                "title": "Provide event-ready favicon/touch icon variants",
+                "body": "Favicon assets detected in scanned files. Consider keeping event variants (e.g., `favicon-halloween.png`, `apple-touch-icon-xmas.png`) and a small switch mechanism to apply seasonal icons. Keep changes subtle and non-intrusive.",
+                "labels": ["enhancement", "assets", "events"],
+            })
+
+        if not has_og_image:
             logger.info("Creating suggestion: No Open Graph image found - recommending OG image addition")
             suggestions.append({
                 "key": "og_add",
                 "title": "Add Open Graph image meta for social sharing",
-                "body": (
-                    "No `og:image` meta tag was detected in HTML files. Adding one enables tasteful, non-intrusive seasonal variants for social sharing cards."
-                ),
+                "body": "No `og:image` meta tag was detected in HTML files. Adding one enables tasteful, non-intrusive seasonal variants for social sharing cards.",
                 "labels": ["enhancement", "seo"],
+            })
+        else:
+            logger.info("Creating suggestion: Open Graph image found - recommending seasonal variants")
+            suggestions.append({
+                "key": "og_variants",
+                "title": "Provide seasonal Open Graph social preview variants",
+                "body": "An `og:image` meta tag was detected in HTML files. Consider providing seasonal social preview images (e.g., subtle hat or snow accents) that can be swapped during events without intrusive UI changes.",
+                "labels": ["enhancement", "seo", "assets"],
             })
 
         if not selector:
@@ -558,14 +513,11 @@ class AnalyzerAgent:
             suggestions.append({
                 "key": "selectors_guidance",
                 "title": "Add CSS selectors or data-attributes to mark event-adaptable elements",
-                "body": (
-                    "No `defaults.selector` was provided in configuration. Adding selectors like `img.hero, .banner-image, [data-event-adaptable]` helps the analyzer "
-                    "target the right UI elements and improves adaptation precision."
-                ),
+                "body": "No `defaults.selector` was provided in configuration. Adding selectors like `img.hero, .banner-image, [data-event-adaptable]` helps the analyzer target the right UI elements and improves adaptation precision.",
                 "labels": ["enhancement", "frontend", "event-customization"],
             })
 
-        # If AI analysis provided considerations WITH EVIDENCE, turn them into suggestions
+        # AI considerations passthrough with confidence/evidence
         considerations = None
         evidence_validated: List[Dict[str, str]] = []
         confidence = 0.0
@@ -577,10 +529,8 @@ class AnalyzerAgent:
             except Exception:
                 confidence = 0.0
 
-        # Thresholds
         min_evidence = 1
         min_conf = 0.6
-
         if (
             considerations and isinstance(considerations, str) and len(considerations) > 10
             and isinstance(evidence_validated, list) and len(evidence_validated) >= min_evidence
