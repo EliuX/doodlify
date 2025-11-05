@@ -13,6 +13,10 @@ class ProjectConfig(BaseModel):
     description: str = Field(..., description="Description of the project for AI agents")
     sources: List[str] = Field(default_factory=list, description="Subpaths to limit agent analysis")
     targetBranch: Optional[str] = Field(None, description="Target branch for PRs")
+    timeZone: str = Field(
+        default="America/Montreal",
+        description="EST timezone (e.g., 'America/Montreal') used to compute active event dates"
+    )
 
 
 class DefaultsConfig(BaseModel):

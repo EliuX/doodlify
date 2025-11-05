@@ -319,35 +319,31 @@ class AnalyzerAgent:
             except Exception:
                 continue
         
-        prompt = f"""
-Analyze this frontend project to identify what elements should be customized for special events.
-
-Project Description: {project_description}
-{f"Target Selector: {selector}" if selector else "No specific selector provided."}
-
-Sample Files (names and excerpts):
-{chr(10).join(file_samples[:5])}
-
-Return STRICT JSON with the following keys ONLY:
-{
-  "framework": "one of: React|Vue|Svelte|Static HTML|Next.js|Nuxt|Unknown",
-  "visual_elements_location": "string",
-  "priority_files": ["relative/path/one.ext", "relative/path/two.ext"],
-  "considerations": "short actionable considerations specific to the project (<= 5 sentences)",
-  "evidence": [
-    {
-      "path": "relative/path/from/repo/root",
-      "reason": "why this path supports your consideration",
-      "snippet": "a short exact snippet from that file supporting the claim (if available)"
-    }
-  ]
-}
-
-Rules:
-- Do NOT invent paths. Only include paths you are confident about.
-- Prefer citing files shown in the sample above or common entrypoints (app/, src/, public/).
-- Keep "considerations" project-specific, not generic.
-"""
+        prompt = (
+            "Analyze this frontend project to identify what elements should be customized for special events.\n\n"
+            f"Project Description: {project_description}\n"
+            f"{('Target Selector: ' + selector) if selector else 'No specific selector provided.'}\n\n"
+            "Sample Files (names and excerpts):\n"
+            f"{chr(10).join(file_samples[:5])}\n\n"
+            "Return STRICT JSON with the following keys ONLY:\n"
+            "{{\n"
+            "  \"framework\": \"one of: React|Vue|Svelte|Static HTML|Next.js|Nuxt|Unknown\",\n"
+            "  \"visual_elements_location\": \"string\",\n"
+            "  \"priority_files\": [\"relative/path/one.ext\", \"relative/path/two.ext\"],\n"
+            "  \"considerations\": \"short actionable considerations specific to the project (<= 5 sentences)\",\n"
+            "  \"evidence\": [\n"
+            "    {{\n"
+            "      \"path\": \"relative/path/from/repo/root\",\n"
+            "      \"reason\": \"why this path supports your consideration\",\n"
+            "      \"snippet\": \"a short exact snippet from that file supporting the claim (if available)\"\n"
+            "    }}\n"
+            "  ]\n"
+            "}}\n\n"
+            "Rules:\n"
+            "- Do NOT invent paths. Only include paths you are confident about.\n"
+            "- Prefer citing files shown in the sample above or common entrypoints (app/, src/, public/).\n"
+            "- Keep \"considerations\" project-specific, not generic.\n"
+        )
         
         try:
             response = self.client.chat.completions.create(

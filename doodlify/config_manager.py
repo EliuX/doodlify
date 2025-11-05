@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .models import Config, ConfigLock, EventLock, EventProgress, AnalysisResult
 
@@ -30,6 +31,7 @@ class ConfigManager:
             self.lock_path = Path(lock_path)
         self._config: Optional[Config] = None
         self._lock: Optional[ConfigLock] = None
+        self._tz: Optional[ZoneInfo] = None
 
     def load_config(self) -> Config:
         """Load and validate configuration file."""
@@ -179,7 +181,13 @@ class ConfigManager:
         if not self._lock:
             self.load_lock()
 
-        today = datetime.utcnow().date()
+        tz = self.get_project_timezone();
+        if tz is None:
+            # Fallback to UTC when timezone is missing or invalid
+            today = datetime.utcnow().date()
+        else:
+            today = datetime.now(tz).date()
+
         active_events = []
 
         for event in self._lock.events:
@@ -190,6 +198,22 @@ class ConfigManager:
                 active_events.append(event)
 
         return active_events
+    
+    def get_project_timezone(self) -> ZoneInfo:
+        if self._tz:
+            return self._tz
+        
+        tz_name = None
+        try:
+            tz_name = getattr(self._lock.project, "timeZone", None)
+        except Exception:
+            tz_name = None 
+        try:
+            if tz_name:
+                self._tz = ZoneInfo(tz_name)
+        except Exception:
+            self._tz = None
+        return self._tz
 
     def get_unprocessed_active_events(self) -> list[EventLock]:
         """Get active events that haven't been processed yet."""
