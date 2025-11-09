@@ -26,7 +26,9 @@ Instructions:
 - Keep the style consistent with the original
 - Use colors and visual elements that evoke the theme
 - Ensure the result is professional and high-quality
-- Make the background transparent if possible
+- PRESERVE any existing transparency (alpha channel) exactly as in the original
+- Do NOT introduce a checkerboard or solid fill where transparency exists
+- Do NOT flatten the image; keep transparent pixels transparent
 """
         
         if image_context:
