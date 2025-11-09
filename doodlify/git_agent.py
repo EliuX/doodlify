@@ -28,10 +28,17 @@ class GitAgent:
         if self.repo_path.exists():
             # Repository exists, update it
             self.repo = Repo(self.repo_path)
+            # If there are local changes, stash them before any checkout/pull
+            try:
+                if self.repo.is_dirty(untracked_files=True) or bool(self.repo.untracked_files):
+                    self.repo.git.stash('push', '-u', '-m', 'doodlify: pre-update stash')
+            except Exception:
+                # Non-fatal; continue and allow ff-only/rebase logic to handle
+                pass
             origin = self.repo.remotes.origin
             origin.fetch()
             
-            # Checkout and pull the specified branch
+            # Checkout and pull the specified branch (fast-forward only)
             if branch in self.repo.heads:
                 self.repo.heads[branch].checkout()
             else:
@@ -41,8 +48,17 @@ class GitAgent:
                 else:
                     # Branch doesn't exist, use default
                     self.repo.heads[self.repo.active_branch.name].checkout()
-            
-            origin.pull()
+            # Fast-forward only to avoid auto-merges/divergence prompts
+            try:
+                self.repo.git.pull('--ff-only', 'origin', branch)
+            except Exception:
+                # If ff-only fails (diverged), rebase onto remote as a safe default
+                try:
+                    self.repo.git.fetch('origin', branch)
+                    self.repo.git.rebase(f'origin/{branch}')
+                except Exception:
+                    # Leave as-is; orchestrator may handle stashing/conflicts
+                    pass
         else:
             # Clone repository
             self.workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -59,14 +75,29 @@ class GitAgent:
         if not self.repo:
             raise RuntimeError("Repository not initialized")
         
+        # Ensure any local modifications are stashed before switching branches
+        try:
+            if self.repo.is_dirty(untracked_files=True) or bool(self.repo.untracked_files):
+                self.repo.git.stash('push', '-u', '-m', 'doodlify: pre-create-branch stash')
+        except Exception:
+            # Non-fatal; branch checkout may still succeed
+            pass
+
         # Ensure we're on the from_branch and it's up to date
         if from_branch in self.repo.heads:
             self.repo.heads[from_branch].checkout()
         else:
             self.repo.git.checkout('-b', from_branch, f'origin/{from_branch}')
         
-        origin = self.repo.remotes.origin
-        origin.pull()
+        # Fast-forward only to latest remote for base branch
+        try:
+            self.repo.git.pull('--ff-only', 'origin', from_branch)
+        except Exception:
+            try:
+                self.repo.git.fetch('origin', from_branch)
+                self.repo.git.rebase(f'origin/{from_branch}')
+            except Exception:
+                pass
         
         # Create new branch
         if branch_name in self.repo.heads:
@@ -173,6 +204,29 @@ class GitAgent:
             origin.push(branch_name, force=True)
         else:
             origin.push(branch_name)
+
+    def stash_push(self, message: str = 'doodlify-auto') -> bool:
+        """Stash local changes (including untracked) if any. Returns True if stashed."""
+        if not self.repo:
+            raise RuntimeError("Repository not initialized")
+        dirty = self.repo.is_dirty(untracked_files=True) or bool(self.repo.untracked_files)
+        if dirty:
+            try:
+                self.repo.git.stash('push', '-u', '-m', message)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def stash_apply(self) -> bool:
+        """Apply the most recent stash. Returns True if applied without error."""
+        if not self.repo:
+            raise RuntimeError("Repository not initialized")
+        try:
+            self.repo.git.stash('apply')
+            return True
+        except Exception:
+            return False
     
     def get_file_path(self, relative_path: str) -> Path:
         """Get absolute path to a file in the repository."""

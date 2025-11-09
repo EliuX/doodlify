@@ -99,7 +99,78 @@ def analyze(config: str, report_all: bool):
     help='Path to configuration file',
     type=click.Path(exists=True)
 )
-def process(config: str):
+@click.option(
+    '--event-id',
+    required=True,
+    help='Event ID to operate on',
+    type=str
+)
+@click.option(
+    '--files',
+    required=True,
+    help='Comma-separated repo-relative file paths to restore from .original backups',
+    type=str
+)
+def restore(config: str, event_id: str, files: str):
+    """
+    Restore selected files from their `.original` backups and clear their processed state.
+
+    This is useful when you want to reprocess specific files without clearing the whole event.
+    """
+    try:
+        # Env (only minimal vars needed for repo access)
+        github_token = get_env_or_exit('GITHUB_PERSONAL_ACCESS_TOKEN')
+        openai_api_key = get_env_or_exit('OPENAI_API_KEY')
+        repo_name = get_env_or_exit('GITHUB_REPO_NAME')
+
+        config_manager = ConfigManager(config_path=config)
+        orchestrator = Orchestrator(
+            config_manager=config_manager,
+            github_token=github_token,
+            openai_api_key=openai_api_key,
+            repo_name=repo_name,
+        )
+
+        file_list = [p.strip() for p in files.split(',') if p.strip()]
+        success = orchestrator.restore_files(event_id=event_id, files=file_list)
+
+        if success:
+            click.echo("\n✅ Restore completed successfully!")
+            sys.exit(0)
+        else:
+            click.echo("\n❌ Restore failed!", err=True)
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"\n❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option(
+    '--config',
+    default='config.json',
+    help='Path to configuration file',
+    type=click.Path(exists=True)
+)
+@click.option(
+    '--event-id',
+    default=None,
+    help='Process a specific event ID (bypasses active/unprocessed filters)',
+    type=str
+)
+@click.option(
+    '--only',
+    default=None,
+    help='Comma-separated list of repo-relative files to process only',
+    type=str
+)
+@click.option(
+    '--force',
+    is_flag=True,
+    default=False,
+    help='Force reprocess even if backups (.original) exist'
+)
+def process(config: str, event_id: Optional[str], only: Optional[str], force: bool):
     """
     Process all active unprocessed events.
 
@@ -123,7 +194,10 @@ def process(config: str):
         )
 
         # Run processing
-        success = orchestrator.process()
+        only_list = None
+        if only:
+            only_list = [p.strip() for p in only.split(',') if p.strip()]
+        success = orchestrator.process(event_id=event_id, only=only_list, force=force)
 
         if success:
             click.echo("\n✅ Processing completed successfully!")

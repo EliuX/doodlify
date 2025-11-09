@@ -218,6 +218,22 @@ doodlify process
 - Creates backup files
 - Commits changes locally
 
+Advanced flags:
+
+```bash
+# Process a specific event (bypasses active/unprocessed filters)
+doodlify process --event-id halloween-2025
+
+# Process only certain files for an event
+doodlify process --event-id halloween-2025 \
+  --only frontend/web-ui/src/images/hero-ecommerce-construction.png,frontend/web-ui/src/images/hero-telephony.png
+
+# Force reprocess even if `.original` backups exist
+doodlify process --event-id halloween-2025 \
+  --only frontend/web-ui/src/images/hero-ecommerce-construction.png \
+  --force
+```
+
 ### 3. Push Phase
 ```bash
 doodlify push
@@ -411,6 +427,39 @@ doodlify clear --event-id halloween-2024
 # Clear all
 doodlify clear
 ```
+
+### Reprocessing a single file
+
+There are two supported workflows to re-run an individual file without clearing everything:
+
+1) Restore from backup, then process (safe, resets the file to its exact original)
+
+```bash
+# Restore the current file from its `.original` backup and remove the backup
+doodlify restore \
+  --event-id halloween-2025 \
+  --files frontend/web-ui/src/images/hero-ecommerce-construction.png
+
+# Re-run processing for just that file
+doodlify process \
+  --event-id halloween-2025 \
+  --only frontend/web-ui/src/images/hero-ecommerce-construction.png
+```
+
+2) Force process (skip the backup check and re-transform in place)
+
+```bash
+doodlify process \
+  --event-id halloween-2025 \
+  --only frontend/web-ui/src/images/hero-ecommerce-construction.png \
+  --force
+```
+
+Notes:
+- Backups: When a file is first transformed, Doodlify creates a `.original` sibling (e.g., `image.png.original`).
+- Default skip: Subsequent runs skip files with existing `.original` to avoid duplicate work.
+- Restore: `doodlify restore` puts the original bytes back into the current file and removes the `.original`, making it eligible for normal processing again.
+- Force: `--force` tells the processor to ignore `.original` and reprocess anyway.
 
 ## 🧩 Optional Repo Manifest (event.manifest.json)
 

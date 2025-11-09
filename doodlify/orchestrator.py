@@ -3,6 +3,7 @@ Main orchestrator for the Doodlify workflow.
 """
 
 import os
+import json
 import asyncio
 import hashlib
 from pathlib import Path
@@ -75,7 +76,7 @@ class Orchestrator:
             if missing_vars:
                 print(f"✗ Missing environment variables: {', '.join(missing_vars)}")
                 return False
-            
+
             print(f"✓ Environment variables validated")
             
             # Initialize Git agent and clone/update repository
@@ -143,6 +144,76 @@ class Orchestrator:
             
         except Exception as e:
             print(f"\n✗ Analysis failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def restore_files(self, event_id: str, files: List[str]) -> bool:
+        """Restore selected files from their `.original` backups and reset their processed state.
+
+        - Replaces the current file with the `.original` content
+        - Removes the `.original` file
+        - Marks file status as pending so it can be reprocessed
+        """
+        try:
+            # Ensure repo is available
+            cfg = self.config_manager.config
+            if not self.git_agent:
+                repo_url = f"https://{self.github_token}@github.com/{self.repo_name}.git"
+                self.git_agent = GitAgent(repo_url)
+                base_branch = cfg.project.targetBranch or "main"
+                repo_path = self.git_agent.clone_or_update(base_branch)
+                print(f"Repository ready at: {repo_path}")
+
+                # Align lock path with workspace repo directory
+                try:
+                    derived_lock_name = self.config_manager.lock_path.name
+                    self.config_manager.lock_path = Path(repo_path) / derived_lock_name
+                except Exception:
+                    pass
+            
+            # Normalize inputs
+            targets = [str(Path(p).as_posix()).lstrip('/') for p in files]
+            event_lock = self.config_manager.get_event_lock(event_id)
+            if not event_lock:
+                print(f"Event not found: {event_id}")
+                return False
+
+            sources = getattr(cfg.project, "sources", []) or []
+            file_status = dict(getattr(event_lock.progress, "file_status", {}) or {})
+            modified_files = set(event_lock.progress.modified_files or [])
+
+            restored_any = False
+            for rel in targets:
+                full_path = self.git_agent.find_file(rel, sources=sources)
+                try:
+                    rel_path = str(full_path.relative_to(self.git_agent.repo_path))
+                except Exception:
+                    rel_path = rel
+
+                backup_full = full_path.with_suffix(full_path.suffix + '.original')
+                if not backup_full.exists():
+                    print(f"  ⚠️  No backup to restore: {rel_path}")
+                    continue
+
+                try:
+                    # Replace current with original, then remove .original
+                    data = backup_full.read_bytes()
+                    full_path.write_bytes(data)
+                    backup_full.unlink()
+
+                    # Update status and modified files
+                    file_status[rel_path] = {"status": "pending", "updated_at": datetime.utcnow().isoformat()}
+                    modified_files.discard(rel_path + '.original')
+                    self.config_manager.update_event_progress(event_id, file_status=file_status, modified_files=sorted(modified_files))
+                    print(f"  🔄 Restored from backup: {rel_path}")
+                    restored_any = True
+                except Exception as e:
+                    print(f"  ✗ Failed to restore {rel_path}: {e}")
+
+            return restored_any
+        except Exception as e:
+            print(f"\n✗ Restore failed: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -239,9 +310,7 @@ class Orchestrator:
                 print(f"Warning: Failed to create issue via agent: {e}")
                 continue
 
-        self.config_manager.save_lock()
-    
-    def process(self) -> bool:
+    def process(self, event_id: Optional[str] = None, only: Optional[List[str]] = None, force: bool = False) -> bool:
         """
         Process phase: Process all active unprocessed events.
         
@@ -262,8 +331,23 @@ class Orchestrator:
                 repo_path = self.git_agent.clone_or_update(base_branch)
                 print(f"Repository ready at: {repo_path}")
 
-            # Get unprocessed active events
-            events_to_process = self.config_manager.get_unprocessed_active_events()
+                # Ensure the lock file is written/read inside the workspace repo directory
+                try:
+                    derived_lock_name = self.config_manager.lock_path.name
+                    self.config_manager.lock_path = Path(repo_path) / derived_lock_name
+                except Exception:
+                    pass
+
+            # Determine events to process
+            if event_id:
+                lock = self.config_manager.lock
+                events_to_process = [e for e in lock.events if e.id == event_id]
+                if not events_to_process:
+                    print(f"No event found with id: {event_id}")
+                    return True
+            else:
+                # Default behavior: unprocessed & active
+                events_to_process = self.config_manager.get_unprocessed_active_events()
             
             if not events_to_process:
                 print("No unprocessed active events found.")
@@ -272,7 +356,7 @@ class Orchestrator:
             print(f"Processing {len(events_to_process)} event(s)...\n")
             
             for event in events_to_process:
-                success = self._process_event(event)
+                success = self._process_event(event, only=only, force=force)
                 if not success:
                     print(f"✗ Failed to process event: {event.name}")
                     return False
@@ -286,7 +370,7 @@ class Orchestrator:
             traceback.print_exc()
             return False
     
-    def _process_event(self, event: EventLock) -> bool:
+    def _process_event(self, event: EventLock, only: Optional[List[str]] = None, force: bool = False) -> bool:
         """Process a single event."""
         print(f"\n{'=' * 60}")
         print(f"🎨 Processing: {event.name}")
@@ -299,43 +383,79 @@ class Orchestrator:
                 status="processing",
                 started_at=datetime.utcnow().isoformat()
             )
-            
+
             # Get configuration
             config = self.config_manager.config
             branch_prefix = config.defaults.branchPrefix or ""
             branch_name = f"{branch_prefix}{event.branch}"
-            
-            # Create/checkout event branch
+
+            # Safeguard local work before updating base: stash changes
+            stashed = False
+            try:
+                stashed = self.git_agent.stash_push('doodlify: pre-process stash')
+            except Exception:
+                stashed = False
+
+            # Ensure base branch is up-to-date (ff-only) and create/checkout event branch
             print(f"📂 Creating branch: {branch_name}")
             base_branch = config.project.targetBranch or self.target_branch or "main"
             self.git_agent.create_branch(branch_name, base_branch)
             self.config_manager.update_event_progress(event.id, branch_created=True)
-            
+
+            # Re-apply stashed work onto the event branch (if any)
+            if stashed:
+                applied = self.git_agent.stash_apply()
+                if not applied:
+                    print("⚠️  Failed to apply stash automatically; please resolve manually if needed.")
+
             # Get analysis data
-            analysis = event.analysis or self.config_manager.lock.global_analysis
-            if not analysis:
-                print("⚠️  No analysis data available, performing analysis...")
-                analysis_result = self.analyzer_agent.analyze_codebase(
-                    self.git_agent.repo_path,
-                    config.project.sources,
-                    config.defaults.selector,
-                    config.project.description
+            analysis = None
+            # If a focused file list was provided, avoid full analysis and use it directly
+            if only:
+                normalized_only = [str(Path(p).as_posix()).lstrip('/') for p in only]
+                analysis = AnalysisResult(
+                    files_of_interest=normalized_only,
+                    image_files=[p for p in normalized_only if any(p.lower().endswith(ext) for ext in ('.png', '.jpg', '.jpeg', '.webp'))],
+                    text_files=[p for p in normalized_only if p.lower().endswith('.json')],
+                    selectors_found=[],
+                    notes={},
+                    improvement_suggestions=[],
                 )
-                analysis = AnalysisResult(**analysis_result)
-                self.config_manager.update_event_analysis(event.id, analysis)
+            else:
+                analysis = event.analysis or self.config_manager.lock.global_analysis
+                if not analysis:
+                    analysis_result = self.analyzer_agent.analyze_codebase(
+                        self.git_agent.repo_path,
+                        config.project.sources,
+                        config.defaults.selector,
+                        config.project.description
+                    )
+                    analysis = AnalysisResult(**analysis_result)
+                    self.config_manager.update_event_analysis(event.id, analysis)
             
             modified_files = []
             
-            # Process image files
-            if analysis.image_files:
-                print(f"\n🖼️  Processing {len(analysis.image_files)} image(s)...")
-                image_files = self._process_images(event, analysis.image_files)
+            # Normalize "only" list to a set of repo-relative paths
+            only_set: Optional[set] = None
+            if only:
+                only_set = set([str(Path(p).as_posix()).lstrip('/') for p in only])
+
+            # Process image files (respect --only before logging)
+            image_candidates = list(analysis.image_files or [])
+            if only_set is not None:
+                image_candidates = [p for p in image_candidates if (p in only_set or Path(p).name in only_set)]
+            if image_candidates:
+                print(f"\n🖼️  Processing {len(image_candidates)} image(s)...")
+                image_files = self._process_images(event, image_candidates, only=only_set, force=force)
                 modified_files.extend(image_files)
             
-            # Process text files
-            if analysis.text_files:
-                print(f"\n📝 Processing {len(analysis.text_files)} text file(s)...")
-                text_files = self._process_texts(event, analysis.text_files)
+            # Process text files (respect --only before logging)
+            text_candidates = list(analysis.text_files or [])
+            if only_set is not None:
+                text_candidates = [p for p in text_candidates if (p in only_set or Path(p).name in only_set)]
+            if text_candidates:
+                print(f"\n📝 Processing {len(text_candidates)} text file(s)...")
+                text_files = self._process_texts(event, text_candidates, only=only_set, force=force)
                 modified_files.extend(text_files)
             
             if not modified_files:
@@ -388,7 +508,7 @@ class Orchestrator:
             traceback.print_exc()
             return False
     
-    def _process_images(self, event: EventLock, image_paths: List[str]) -> List[str]:
+    def _process_images(self, event: EventLock, image_paths: List[str], only: Optional[set] = None, force: bool = False) -> List[str]:
         """Process image files for an event."""
         modified = []
         
@@ -396,7 +516,6 @@ class Orchestrator:
         config = self.config_manager.config
         sources = getattr(config.project, "sources", []) or []
         
-        # Optional: retain file_status tracking map (not used for skip decisions)
         event_lock = self.config_manager.get_event_lock(event.id)
         file_status = dict(getattr(event_lock.progress, "file_status", {}) or {})
         
@@ -408,9 +527,16 @@ class Orchestrator:
             except Exception:
                 rel_path = str(image_path_str).lstrip('/')
             
-            # Skip if backup exists (idempotence via on-disk evidence)
+            # If an "only" filter is provided, skip files not in the set
+            if only is not None and rel_path not in only:
+                # Also try without leading directories if caller provided a shorter path
+                short_rel = Path(rel_path).name
+                if short_rel not in only:
+                    continue
+
+            # Skip if backup exists (idempotence via on-disk evidence) unless force
             backup_full = full_path.with_suffix(full_path.suffix + '.original')
-            if backup_full.exists():
+            if backup_full.exists() and not force:
                 print(f"  ⏭️  Skipping (backup exists): {rel_path}")
                 # Optionally record as processed if not present
                 if file_status.get(rel_path, {}).get("status") != "processed":
@@ -420,18 +546,28 @@ class Orchestrator:
             
             if not full_path.exists():
                 print(f"  ⚠️  Skipping missing file: {rel_path}")
+                # Log likely search locations for debugging
+                try:
+                    repo_root = self.git_agent.repo_path
+                    searched = [str(repo_root / rel_path)]
+                    for s in sources:
+                        s_norm = str(s).strip().lstrip('./')
+                        searched.append(str(repo_root / s_norm / rel_path))
+                        searched.append(str(repo_root / s_norm / 'web-ui' / 'src' / rel_path))
+                        searched.append(str(repo_root / s_norm / 'public' / rel_path))
+                    searched.append(str(repo_root / 'web-ui' / 'src' / rel_path))
+                    searched.append(str(repo_root / 'public' / rel_path))
+                    print("    Tried:")
+                    for loc in searched[:8]:
+                        print(f"     - {loc}")
+                except Exception:
+                    pass
                 file_status[rel_path] = {"status": "missing", "updated_at": datetime.utcnow().isoformat()}
                 self.config_manager.update_event_progress(event.id, file_status=file_status)
                 continue
             
-            if not self.image_agent.is_supported_format(full_path):
-                print(f"  ⚠️  Skipping unsupported format: {rel_path}")
-                file_status[rel_path] = {"status": "unsupported", "updated_at": datetime.utcnow().isoformat()}
-                self.config_manager.update_event_progress(event.id, file_status=file_status)
-                continue
-            
             try:
-                # Backup original expects repo-relative path
+                # Backup original
                 backup_rel_path = self.git_agent.backup_file(rel_path)
                 print(f"  📦 Backed up: {rel_path}")
                 
@@ -447,7 +583,6 @@ class Orchestrator:
                 modified.append(backup_rel_path)
                 print(f"  ✓ Transformed: {rel_path}")
                 
-                # Update file status and modified files incrementally
                 file_status[rel_path] = {"status": "processed", "updated_at": datetime.utcnow().isoformat()}
                 current_mod = set(event_lock.progress.modified_files or [])
                 current_mod.update([rel_path, backup_rel_path])
@@ -460,7 +595,7 @@ class Orchestrator:
         
         return modified
     
-    def _process_texts(self, event: EventLock, text_paths: List[str]) -> List[str]:
+    def _process_texts(self, event: EventLock, text_paths: List[str], only: Optional[set] = None, force: bool = False) -> List[str]:
         """Process text/i18n files for an event."""
         modified = []
         
@@ -478,9 +613,15 @@ class Orchestrator:
             except Exception:
                 rel_path = str(text_path_str).lstrip('/')
             
-            # Skip if backup exists (idempotence via on-disk evidence)
+            # If an "only" filter is provided, skip files not in the set
+            if only is not None and rel_path not in only:
+                short_rel = Path(rel_path).name
+                if short_rel not in only:
+                    continue
+
+            # Skip if backup exists (idempotence via on-disk evidence) unless force
             backup_full = full_path.with_suffix(full_path.suffix + '.original')
-            if backup_full.exists():
+            if backup_full.exists() and not force:
                 print(f"  ⏭️  Skipping (backup exists): {rel_path}")
                 if file_status.get(rel_path, {}).get("status") != "processed":
                     file_status[rel_path] = {"status": "processed", "updated_at": datetime.utcnow().isoformat()}
