@@ -277,12 +277,38 @@ class GitAgent:
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {relative_path}")
         
-        # Create backup with .original extension
-        backup_path = file_path.with_suffix(file_path.suffix + '.original')
+        # Create backup using new scheme: <name>.original.<ext>
+        backup_path = self.get_backup_path(file_path)
         shutil.copy2(file_path, backup_path)
-        
         return str(backup_path.relative_to(self.repo_path))
     
+    # -------- Backup path utilities (new scheme with backward compatibility) --------
+    def get_backup_path(self, file_path: Path) -> Path:
+        """Return backup path using new scheme: <name>.original.<ext>.
+        If there is no suffix, append `.original` at the end.
+        """
+        if file_path.suffix:
+            # e.g., hero.png -> hero.original.png
+            return file_path.with_name(f"{file_path.stem}.original{file_path.suffix}")
+        # No suffix: fallback to append .original
+        return file_path.with_name(file_path.name + '.original')
+    
+    def get_legacy_backup_path(self, file_path: Path) -> Path:
+        """Legacy backup scheme: <name>.<ext>.original (kept for compatibility)."""
+        return file_path.with_suffix(file_path.suffix + '.original')
+    
+    def resolve_existing_backup(self, file_path: Path) -> Optional[Path]:
+        """Return an existing backup path if found (prefer new scheme).
+        Checks both new and legacy naming to stay compatible with prior runs.
+        """
+        new_path = self.get_backup_path(file_path)
+        if new_path.exists():
+            return new_path
+        legacy_path = self.get_legacy_backup_path(file_path)
+        if legacy_path.exists():
+            return legacy_path
+        return None
+
     def cleanup(self) -> None:
         """Clean up local repository."""
         if self.repo_path and self.repo_path.exists():

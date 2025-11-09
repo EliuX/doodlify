@@ -171,7 +171,7 @@ class Orchestrator:
                     self.config_manager.lock_path = Path(repo_path) / derived_lock_name
                 except Exception:
                     pass
-            
+
             # Normalize inputs
             targets = [str(Path(p).as_posix()).lstrip('/') for p in files]
             event_lock = self.config_manager.get_event_lock(event_id)
@@ -191,8 +191,9 @@ class Orchestrator:
                 except Exception:
                     rel_path = rel
 
-                backup_full = full_path.with_suffix(full_path.suffix + '.original')
-                if not backup_full.exists():
+                # Resolve backup path using new/legacy scheme
+                backup_full = self.git_agent.resolve_existing_backup(full_path)
+                if not backup_full or not backup_full.exists():
                     print(f"  ⚠️  No backup to restore: {rel_path}")
                     continue
 
@@ -204,7 +205,11 @@ class Orchestrator:
 
                     # Update status and modified files
                     file_status[rel_path] = {"status": "pending", "updated_at": datetime.utcnow().isoformat()}
-                    modified_files.discard(rel_path + '.original')
+                    # Remove either new or legacy backup name from modified files
+                    try:
+                        modified_files.discard(str(backup_full.relative_to(self.git_agent.repo_path)))
+                    except Exception:
+                        pass
                     self.config_manager.update_event_progress(event_id, file_status=file_status, modified_files=sorted(modified_files))
                     print(f"  🔄 Restored from backup: {rel_path}")
                     restored_any = True
@@ -217,98 +222,6 @@ class Orchestrator:
             import traceback
             traceback.print_exc()
             return False
-
-    def _fingerprint(self, title: str, body: str) -> str:
-        data = (title.strip() + "\n" + body.strip()).encode("utf-8")
-        return hashlib.sha256(data).hexdigest()
-
-    def _report_suggestions(self, suggestions: List[dict]) -> None:
-        """Create GitHub issues for suggestions if not already reported."""
-        lock = self.config_manager.lock
-        reported = lock.reported_suggestions or []
-        reported_fps = {item.get("fingerprint") for item in reported}
-
-        # Initialize GitHub agent
-        github_agent = GitHubAgent(self.github_token, self.openai_api_key)
-        # Controls for suggestion reporting
-        cfg = self.config_manager.config
-        report_map = dict(getattr(cfg.defaults, "reportSuggestions", {}) or {})
-        report_all = bool(self.report_all_suggestions)
-        
-        for s in suggestions:
-            title = s.get("title") or "Improvement suggestion"
-            body = s.get("body") or ""
-            labels = s.get("labels") or ["enhancement"]
-            fp = self._fingerprint(title, body)
-            key = s.get("key")
-
-            # Decide if this suggestion should be reported based on key map or report-all
-            should_report = report_all or (report_map.get(key, True))
-            if not should_report:
-                print(f"- Skipping suggestion (disabled by defaults.reportSuggestions): {title}")
-                print(f"  Key: {key or 'unknown'}  |  Value: false")
-                continue
-
-            # Additional guard for AI-driven suggestions: require evidence/confidence
-            if key == "ai_considerations":
-                conf = float(s.get("confidence") or 0.0)
-                ev = s.get("evidence") or []
-                if not ev or conf < 0.6:
-                    print(f"- Skipping ai_considerations due to insufficient evidence/confidence: {title}")
-                    print(f"  confidence={conf}, evidence_count={len(ev)} (need >=0.6 and >=1)")
-                    continue
-
-            # If reporting due to --report-all while map=false, mark as optional in logs
-            if report_all and not report_map.get(key, True):
-                print(f"- Filing OPTIONAL suggestion due to --report-all: {title}")
-                print(f"  Key: {key or 'unknown'}  |  defaults.reportSuggestions[{key}] = false")
-            else:
-                print(f"- Filing suggestion as issue: {title}")
-                print("  Reason: Enabled in defaults.reportSuggestions or default behavior.")
-
-            if fp in reported_fps:
-                continue
-
-            # Use agent to handle issue creation with duplicate checking
-            user_input = f"""
-            Search for existing GitHub issues with title "{title}" in repository {self.owner}/{self.repo}.
-            If no duplicate exists, create a new issue with title "{title}", body "{body}", and labels {labels}.
-            
-            Return JSON: {{"issue_number": <number>, "created": <true/false>}}
-            """
-            
-            try:
-                response = github_agent.run(messages=[ChatMessage.from_user(user_input)])
-                
-                # Extract issue number from agent response
-                found_number = None
-                if response and "messages" in response:
-                    final_message = response["messages"][-1]
-                    if hasattr(final_message, "content"):
-                        # Try to extract issue number from response
-                        import re
-                        import json
-                        try:
-                            # Look for JSON in response
-                            json_match = re.search(r'\{[^}]*"issue_number"[^}]*\}', final_message.content)
-                            if json_match:
-                                result = json.loads(json_match.group())
-                                found_number = result.get("issue_number")
-                        except:
-                            # Fallback: look for issue number pattern
-                            match = re.search(r'#(\d+)', final_message.content)
-                            if match:
-                                found_number = int(match.group(1))
-                
-                lock.reported_suggestions.append({
-                    "title": title,
-                    "fingerprint": fp,
-                    "issue_number": found_number,
-                    "reported_at": datetime.utcnow().isoformat(),
-                })
-            except Exception as e:
-                print(f"Warning: Failed to create issue via agent: {e}")
-                continue
 
     def process(self, event_id: Optional[str] = None, only: Optional[List[str]] = None, force: bool = False) -> bool:
         """
@@ -534,60 +447,78 @@ class Orchestrator:
                 if short_rel not in only:
                     continue
 
-            # Skip if backup exists (idempotence via on-disk evidence) unless force
-            backup_full = full_path.with_suffix(full_path.suffix + '.original')
-            if backup_full.exists() and not force:
+            # Determine backup and choose safe source when reprocessing
+            backup_full = self.git_agent.resolve_existing_backup(full_path)
+            backup_rel_path = None
+            if backup_full and backup_full.exists():
+                backup_rel_path = str(backup_full.relative_to(self.git_agent.repo_path))
+
+            # Idempotence: if backup exists and not forcing, skip
+            if backup_full and backup_full.exists() and not force:
                 print(f"  ⏭️  Skipping (backup exists): {rel_path}")
-                # Optionally record as processed if not present
                 if file_status.get(rel_path, {}).get("status") != "processed":
                     file_status[rel_path] = {"status": "processed", "updated_at": datetime.utcnow().isoformat()}
                     self.config_manager.update_event_progress(event.id, file_status=file_status)
                 continue
-            
+
+            # Missing file guard
             if not full_path.exists():
                 print(f"  ⚠️  Skipping missing file: {rel_path}")
-                # Log likely search locations for debugging
-                try:
-                    repo_root = self.git_agent.repo_path
-                    searched = [str(repo_root / rel_path)]
-                    for s in sources:
-                        s_norm = str(s).strip().lstrip('./')
-                        searched.append(str(repo_root / s_norm / rel_path))
-                        searched.append(str(repo_root / s_norm / 'web-ui' / 'src' / rel_path))
-                        searched.append(str(repo_root / s_norm / 'public' / rel_path))
-                    searched.append(str(repo_root / 'web-ui' / 'src' / rel_path))
-                    searched.append(str(repo_root / 'public' / rel_path))
-                    print("    Tried:")
-                    for loc in searched[:8]:
-                        print(f"     - {loc}")
-                except Exception:
-                    pass
                 file_status[rel_path] = {"status": "missing", "updated_at": datetime.utcnow().isoformat()}
                 self.config_manager.update_event_progress(event.id, file_status=file_status)
                 continue
-            
+
+            # Unsupported format guard
+            if not self.image_agent.is_supported_format(full_path):
+                print(f"  ⚠️  Skipping unsupported format: {rel_path}")
+                file_status[rel_path] = {"status": "unsupported", "updated_at": datetime.utcnow().isoformat()}
+                self.config_manager.update_event_progress(event.id, file_status=file_status)
+                continue
+
             try:
-                # Backup original
-                backup_rel_path = self.git_agent.backup_file(rel_path)
-                print(f"  📦 Backed up: {rel_path}")
-                
-                # Transform image in place
-                self.image_agent.transform_image(
-                    full_path,
+                # Decide source for transformation and ensure original backup is preserved
+                # - If no backup yet: create it from current file (first-time processing)
+                # - If backup exists and force: use backup as source and DO NOT overwrite it
+                source_path = full_path
+                if backup_full and backup_full.exists():
+                    if force:
+                        source_path = backup_full
+                        backup_rel_path = str(backup_full.relative_to(self.git_agent.repo_path))
+                else:
+                    backup_rel_path = self.git_agent.backup_file(rel_path)
+                    print(f"  📦 Backed up: {rel_path}")
+
+                # Log which source is being used
+                if source_path == backup_full:
+                    print(f"    ↪ Using source: {str(source_path.relative_to(self.git_agent.repo_path))} (original backup)")
+                else:
+                    print(f"    ↪ Using source: {str(source_path.relative_to(self.git_agent.repo_path))} (working file)")
+
+                # Run image transformation using chosen source; write to working file
+                output_bytes = self.image_agent.transform_image(
+                    source_path,
                     event.name,
                     event.description,
                     output_path=full_path
                 )
-                
+
+                # If the agent returned bytes and didn't already write
+                if output_bytes and not full_path.read_bytes() == output_bytes:
+                    full_path.write_bytes(output_bytes)
+
                 modified.append(rel_path)
-                modified.append(backup_rel_path)
+                if backup_rel_path:
+                    modified.append(backup_rel_path)
                 print(f"  ✓ Transformed: {rel_path}")
-                
+
                 file_status[rel_path] = {"status": "processed", "updated_at": datetime.utcnow().isoformat()}
                 current_mod = set(event_lock.progress.modified_files or [])
-                current_mod.update([rel_path, backup_rel_path])
+                if backup_rel_path:
+                    current_mod.update([rel_path, backup_rel_path])
+                else:
+                    current_mod.update([rel_path])
                 self.config_manager.update_event_progress(event.id, file_status=file_status, modified_files=sorted(current_mod))
-                
+
             except Exception as e:
                 print(f"  ✗ Failed to process {rel_path}: {e}")
                 file_status[rel_path] = {"status": "skipped", "updated_at": datetime.utcnow().isoformat(), "details": str(e)}
@@ -620,8 +551,8 @@ class Orchestrator:
                     continue
 
             # Skip if backup exists (idempotence via on-disk evidence) unless force
-            backup_full = full_path.with_suffix(full_path.suffix + '.original')
-            if backup_full.exists() and not force:
+            backup_full = self.git_agent.resolve_existing_backup(full_path)
+            if backup_full and backup_full.exists() and not force:
                 print(f"  ⏭️  Skipping (backup exists): {rel_path}")
                 if file_status.get(rel_path, {}).get("status") != "processed":
                     file_status[rel_path] = {"status": "processed", "updated_at": datetime.utcnow().isoformat()}
