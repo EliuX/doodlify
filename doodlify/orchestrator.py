@@ -1127,20 +1127,33 @@ This automated customization includes:
                     new_txt = txt
                     for name, backup in pairs:
                         if force_rewrite:
-                            # Remove existing onerror attributes first, then inject new ones
-                            # Match img tags with this src and remove any existing onerror
-                            remove_pattern = re.compile(
-                                rf"(<img[^>]*?src=(?:'|\")([^'\"]*{re.escape(name)})['\"][^>]*?)\s*onerror=['\"][^'\"]*['\"]([^>]*?)(\s*/?\s*>)",
+                            # Remove existing onerror attributes by extracting and rebuilding attributes
+                            full_tag_pattern = re.compile(
+                                rf"<img([^>]*src=(?:'|\")(?:[^'\"]*{re.escape(name)})['\"][^>]*)>",
                                 re.IGNORECASE | re.DOTALL
                             )
-                            new_txt = remove_pattern.sub(r"\1\3\4", new_txt)
+                            
+                            def remove_onerror(m):
+                                tag_content = m.group(1)
+                                # Extract all attributes except onerror
+                                attrs = []
+                                attr_pattern = re.compile(r'(\s+\w+(?:-\w+)*\s*=\s*[\'"][^\'"]*[\'"])', re.IGNORECASE)
+                                for attr_match in attr_pattern.finditer(tag_content):
+                                    attr = attr_match.group(1)
+                                    if not re.search(r'onerror\s*=', attr, re.IGNORECASE):
+                                        attrs.append(attr)
+                                return f"<img{''.join(attrs)} />"
+                            
+                            new_txt = full_tag_pattern.sub(remove_onerror, new_txt)
                         
-                        # Match <img ... src="...name..."> without an onerror already on the same tag
-                        # Use DOTALL to match across newlines, capture optional self-closing slash with closing bracket
-                        pattern = re.compile(rf"(<img[^>]*?src=(?:'|\")([^'\"]*{re.escape(name)})['\"][^>]*?)(\s*/?\s*>)", re.IGNORECASE | re.DOTALL)
+                        # Match <img ... src="...name..."> - be specific about the image name
+                        pattern = re.compile(
+                            rf"(<img[^>]*?src=(?:'|\")(?:[^'\"]*/)?\b{re.escape(name)}\b['\"][^>]*?)(\s*/?\s*>)",
+                            re.IGNORECASE | re.DOTALL
+                        )
                         def _inject(m):
                             tag_start = m.group(1)
-                            closing = m.group(3)
+                            closing = m.group(2)
                             # If already has onerror, skip (unless force_rewrite removed it above)
                             if not force_rewrite and re.search(r"onerror=", tag_start, re.IGNORECASE):
                                 return m.group(0)
