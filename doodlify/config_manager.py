@@ -84,6 +84,17 @@ class ConfigManager:
             else:
                 # Map keyed by repo folder name
                 repo_key = self.repo_path.name if self.repo_path else "default"
+                
+                # Check if this is an old flat-structure file (has 'project' at root)
+                if "project" in raw and repo_key not in raw:
+                    # Migrate old flat structure to keyed structure
+                    old_data = {k: v for k, v in raw.items() if k != repo_key}
+                    raw = {repo_key: old_data}
+                    # Save migrated structure
+                    self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(self.lock_path, 'w', encoding="utf-8") as wf:
+                        json.dump(raw, wf, indent=2)
+                
                 data = raw.get(repo_key)
                 if not data:
                     # Initialize entry for this repo
