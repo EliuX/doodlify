@@ -348,7 +348,7 @@ class Orchestrator:
             traceback.print_exc()
             return False
 
-    def process(self, event_id: Optional[str] = None, only: Optional[List[str]] = None, force: bool = False, text_only: bool = False) -> bool:
+    def process(self, event_id: Optional[str] = None, only: Optional[List[str]] = None, force: bool = False) -> bool:
         """
         Process phase: Process all active unprocessed events.
         
@@ -356,7 +356,6 @@ class Orchestrator:
             event_id: Specific event ID to process
             only: List of specific files to process
             force: Force reprocess even if backups exist
-            text_only: Only reprocess HTML/text files (skip image transformation)
         
         Returns:
             True if processing successful, False otherwise
@@ -400,7 +399,7 @@ class Orchestrator:
             print(f"Processing {len(events_to_process)} event(s)...\n")
             
             for event in events_to_process:
-                success = self._process_event(event, only=only, force=force, text_only=text_only)
+                success = self._process_event(event, only=only, force=force)
                 if not success:
                     print(f"✗ Failed to process event: {event.name}")
                     return False
@@ -414,14 +413,13 @@ class Orchestrator:
             traceback.print_exc()
             return False
     
-    def _process_event(self, event: EventLock, only: Optional[List[str]] = None, force: bool = False, text_only: bool = False) -> bool:
+    def _process_event(self, event: EventLock, only: Optional[List[str]] = None, force: bool = False) -> bool:
         """Process a single event.
         
         Args:
             event: Event to process
             only: List of specific files to process
             force: Force reprocess even if backups exist
-            text_only: Only reprocess HTML/text files (skip image transformation)
         """
         print(f"\n{'=' * 60}")
         print(f"🎨 Processing: {event.name}")
@@ -506,9 +504,18 @@ class Orchestrator:
             selected_palette = self._select_palette(event, analysis)
 
             # Transform theme colors first (primary/secondary) so pages and images align
+            # Use AI-powered detection if useEventColorPalette is enabled
+            use_event_palette = event.useEventColorPalette
+            if use_event_palette is None:
+                use_event_palette = getattr(self.config_manager.config.defaults, 'useEventColorPalette', False)
+            
             try:
-                theme_modified = self._transform_theme_colors(selected_palette)
-            except Exception as _:
+                if use_event_palette:
+                    theme_modified = self._transform_theme_colors_ai(event, analysis, selected_palette)
+                else:
+                    theme_modified = self._transform_theme_colors(selected_palette)
+            except Exception as e:
+                print(f"  ⚠️  Theme color transformation failed: {e}")
                 theme_modified = []
             
             modified_files = []
@@ -520,30 +527,15 @@ class Orchestrator:
             if only:
                 only_set = set([str(Path(p).as_posix()).lstrip('/') for p in only])
 
-            # Process image files (respect --only before logging, skip if text_only)
+            # Process image files (respect --only before logging)
             image_candidates = list(analysis.image_files or [])
             if only_set is not None:
                 image_candidates = [p for p in image_candidates if (p in only_set or Path(p).name in only_set)]
             
-            if not text_only:
-                if image_candidates:
-                    print(f"\n🖼️  Processing {len(image_candidates)} image(s)...")
-                    image_files = self._process_images(event, image_candidates, only=only_set, force=force, palette=selected_palette)
-                    modified_files.extend(image_files)
-            else:
-                print(f"\n⏭️  Skipping image transformation (--text-only mode)")
-
-            # Inject HTML fallbacks for processed images (dialect-aware)
-            # In text-only mode, this will reprocess HTML files to fix onerror attributes
-            try:
-                if image_candidates:
-                    print(f"\n📝 Injecting onerror fallbacks in HTML/text files...")
-                    # Force rewrite in text-only mode to fix malformed attributes
-                    fallback_modified = self._inject_image_fallbacks(image_candidates, force_rewrite=text_only)
-                    if fallback_modified:
-                        modified_files.extend(fallback_modified)
-            except Exception as e:
-                print(f"  ⚠️  Failed to inject fallbacks: {e}")
+            if image_candidates:
+                print(f"\n🖼️  Processing {len(image_candidates)} image(s)...")
+                image_files = self._process_images(event, image_candidates, only=only_set, force=force, palette=selected_palette)
+                modified_files.extend(image_files)
 
             # Process text files (respect --only before logging)
             text_candidates = list(analysis.text_files or [])
@@ -1088,83 +1080,146 @@ This automated customization includes:
                     continue
         return modified
 
-    def _inject_image_fallbacks(self, image_paths: List[str], force_rewrite: bool = False) -> List[str]:
-        """Inject onerror fallbacks for <img> tags across supported dialects (HTML/TSX/JSX/Vue/Svelte).
-        - For each processed image, find usages and add onerror handler pointing to .original variant if not already present.
-        - Idempotent: will not duplicate onerror if present (unless force_rewrite=True).
+    def _transform_theme_colors_ai(self, event: EventLock, analysis: AnalysisResult, palette: List[str]) -> List[str]:
+        """AI-powered color transformation for CSS/SCSS/SASS/LESS files.
+        Uses LLM to intelligently identify color variables and properties to modify.
         
         Args:
-            image_paths: List of image file paths
-            force_rewrite: If True, rewrites onerror even if already present (useful for fixing malformed attributes)
+            event: Event being processed
+            analysis: Analysis result with file information
+            palette: Color palette to apply
         
-        Returns list of modified repo-relative files (including backups).
+        Returns:
+            List of modified repo-relative paths (including backups)
         """
-        if not image_paths:
+        if not palette:
             return []
-        exts = {'.html', '.htm', '.tsx', '.jsx', '.vue', '.svelte'}
-        modified: List[str] = []
-        # Build map from original src to backup src
-        pairs = []
-        for p in image_paths:
-            stem = Path(p).stem
-            suffix = Path(p).suffix
-            # new scheme backup name: <name>.original<ext>
-            backup_name = f"{stem}.original{suffix}"
-            pairs.append((Path(p).name, backup_name))
-        # Scan all candidate files under sources
+        
+        print(f"\n🎨 Using AI-powered color detection for theme transformation...")
+        
         cfg = self.config_manager.config
         sources = getattr(cfg.project, 'sources', []) or []
-        roots = [(self.git_agent.repo_path / s) for s in sources] or [self.git_agent.repo_path]
-        for root in roots:
+        modified: List[str] = []
+        exts = {'.css', '.scss', '.sass', '.less'}
+        
+        # Collect all style files
+        style_files = []
+        for src in (sources or ['']):
+            root = (self.git_agent.repo_path / src) if src else self.git_agent.repo_path
             if not root.exists():
                 continue
-            for f in root.rglob('*'):
-                try:
-                    if f.suffix.lower() not in exts or not f.is_file():
-                        continue
-                    rel = str(f.relative_to(self.git_agent.repo_path))
-                    txt = f.read_text(encoding='utf-8', errors='ignore')
-                    new_txt = txt
-                    for name, backup in pairs:
-                        if force_rewrite:
-                            # Remove existing onerror attributes by extracting and rebuilding attributes
-                            full_tag_pattern = re.compile(
-                                rf"<img([^>]*src=(?:'|\")(?:[^'\"]*{re.escape(name)})['\"][^>]*)>",
-                                re.IGNORECASE | re.DOTALL
-                            )
-                            
-                            def remove_onerror(m):
-                                tag_content = m.group(1)
-                                # Extract all attributes except onerror
-                                attrs = []
-                                attr_pattern = re.compile(r'(\s+\w+(?:-\w+)*\s*=\s*[\'"][^\'"]*[\'"])', re.IGNORECASE)
-                                for attr_match in attr_pattern.finditer(tag_content):
-                                    attr = attr_match.group(1)
-                                    if not re.search(r'onerror\s*=', attr, re.IGNORECASE):
-                                        attrs.append(attr)
-                                return f"<img{''.join(attrs)} />"
-                            
-                            new_txt = full_tag_pattern.sub(remove_onerror, new_txt)
-                        
-                        # Match <img ... src="...name..."> - be specific about the image name
-                        pattern = re.compile(
-                            rf"(<img[^>]*?src=(?:'|\")(?:[^'\"]*/)?\b{re.escape(name)}\b['\"][^>]*?)(\s*/?\s*>)",
-                            re.IGNORECASE | re.DOTALL
-                        )
-                        def _inject(m):
-                            tag_start = m.group(1)
-                            closing = m.group(2)
-                            # If already has onerror, skip (unless force_rewrite removed it above)
-                            if not force_rewrite and re.search(r"onerror=", tag_start, re.IGNORECASE):
-                                return m.group(0)
-                            # Normalize closing: remove extra whitespace, keep / if present, add space before >
-                            normalized_closing = " />" if "/" in closing else ">"
-                            return tag_start + f" onerror=\"this.onerror=null;this.src='{backup}'\"" + normalized_closing
-                        new_txt = pattern.sub(_inject, new_txt)
-                    if new_txt != txt:
-                        backup_rel = self.git_agent.backup_file(rel)
-                        f.write_text(new_txt, encoding='utf-8')
-                        modified.extend([rel, backup_rel])
-                except Exception:
+            for p in root.rglob('*'):
+                if p.suffix.lower() in exts and p.is_file():
+                    rel = str(p.relative_to(self.git_agent.repo_path))
+                    style_files.append((rel, p))
+        
+        if not style_files:
+            print("  ℹ️  No CSS/SCSS/SASS/LESS files found")
+            return []
+        
+        print(f"  📁 Found {len(style_files)} style file(s)")
+        
+        # Process each file with AI
+        from openai import OpenAI
+        client = OpenAI(api_key=self.openai_api_key)
+        
+        for rel, file_path in style_files:
+            try:
+                content = file_path.read_text(encoding='utf-8', errors='ignore')
+                
+                # Skip if file is too small (likely not a theme file)
+                if len(content.strip()) < 50:
                     continue
+                
+                # Ask AI to identify color variables and suggest replacements
+                prompt = f"""You are analyzing a stylesheet for an event-themed website transformation.
+
+Event: {event.name}
+Event Description: {event.description}
+Color Palette: {', '.join(palette)}
+
+Stylesheet file: {rel}
+Content (first 2000 chars):
+```
+{content[:2000]}
+```
+
+Identify ALL color-related variables, properties, and values that should be changed to match the event theme.
+Consider:
+- CSS custom properties (--color-name, --primary, --accent, etc.)
+- SCSS/SASS variables ($color-name, $primary, $brand-color, etc.)
+- LESS variables (@color-name, @primary, @theme-color, etc.)
+- Direct color values in properties (background-color, color, border-color, etc.)
+
+For each identified item, provide:
+1. The exact pattern to search for (use regex if needed)
+2. The replacement value from the palette
+3. Brief reason why this should change
+
+Respond in JSON format:
+{{
+  "changes": [
+    {{
+      "pattern": "regex or literal string to find",
+      "replacement": "new color value from palette",
+      "reason": "brief explanation",
+      "is_regex": true/false
+    }}
+  ]
+}}
+
+If no changes are needed, return {{"changes": []}}.
+"""
+                
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are an expert in CSS, SCSS, SASS, and LESS. You identify color-related code that should be modified for event themes."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.3
+                )
+                
+                result = json.loads(response.choices[0].message.content)
+                changes = result.get('changes', [])
+                
+                if not changes:
+                    continue
+                
+                print(f"  🔍 {rel}: Found {len(changes)} color change(s)")
+                
+                # Apply changes
+                new_content = content
+                for change in changes:
+                    pattern = change.get('pattern', '')
+                    replacement = change.get('replacement', '')
+                    is_regex = change.get('is_regex', False)
+                    reason = change.get('reason', '')
+                    
+                    if not pattern or not replacement:
+                        continue
+                    
+                    try:
+                        if is_regex:
+                            new_content = re.sub(pattern, replacement, new_content)
+                        else:
+                            new_content = new_content.replace(pattern, replacement)
+                        print(f"    ✓ {reason}")
+                    except Exception as e:
+                        print(f"    ✗ Failed to apply change: {e}")
+                        continue
+                
+                # Write changes if modified
+                if new_content != content:
+                    backup_rel = self.git_agent.backup_file(rel)
+                    file_path.write_text(new_content, encoding='utf-8')
+                    modified.extend([rel, backup_rel])
+                    print(f"    💾 Saved changes to {rel}")
+                
+            except Exception as e:
+                print(f"  ✗ Failed to process {rel}: {e}")
+                continue
+        
         return modified
+

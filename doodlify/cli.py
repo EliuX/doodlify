@@ -170,13 +170,7 @@ def restore(config: str, event_id: str, files: str):
     default=False,
     help='Force reprocess even if backups (.original) exist'
 )
-@click.option(
-    '--text-only',
-    is_flag=True,
-    default=False,
-    help='Only reprocess HTML/text files to inject onerror attributes (skip image transformation)'
-)
-def process(config: str, event_id: Optional[str], only: Optional[str], force: bool, text_only: bool):
+def process(config: str, event_id: Optional[str], only: Optional[str], force: bool):
     """
     Process all active unprocessed events.
 
@@ -203,7 +197,7 @@ def process(config: str, event_id: Optional[str], only: Optional[str], force: bo
         only_list = None
         if only:
             only_list = [p.strip() for p in only.split(',') if p.strip()]
-        success = orchestrator.process(event_id=event_id, only=only_list, force=force, text_only=text_only)
+        success = orchestrator.process(event_id=event_id, only=only_list, force=force)
 
         if success:
             click.echo("\n✅ Processing completed successfully!")

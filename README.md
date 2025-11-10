@@ -242,6 +242,10 @@ doodlify push
 - Creates pull requests
 - Updates lock file with PR URLs
 
+Notes:
+- PR creation now uses the direct GitHub REST API via `requests` (no MCP). Ensure your
+  `GITHUB_PERSONAL_ACCESS_TOKEN` has `repo` permissions.
+
 ### Push and PR workflow when you have local tweaks
 If you made additional edits inside the workspace repo (e.g., fixed CSS or HTML) after processing, commit them first and then run `doodlify push`:
 
@@ -294,6 +298,60 @@ Transition guidance:
   - Finish and push the current event’s branch (`doodlify push`).
   - Commit any extra manual tweaks inside `.doodlify-workspace/<repo>` before switching.
   - Run `doodlify analyze` (optional but recommended) and `doodlify process --event-id <next-event>` for the new event.
+
+## 🎨 AI-Powered Color Detection
+
+When `useEventColorPalette` is enabled (either in `defaults` or per-event), Doodlify uses AI to intelligently detect and transform colors in your stylesheets.
+
+### Configuration
+
+Enable in `config.json`:
+
+```json
+{
+  "defaults": {
+    "useEventColorPalette": true
+  },
+  "events": [
+    {
+      "id": "halloween-2024",
+      "name": "Halloween 2024",
+      "description": "Spooky Halloween theme with pumpkins and orange/black colors",
+      "useEventColorPalette": true  // Override per event
+    }
+  ]
+}
+```
+
+### How it works
+
+1. **AI Analysis**: For each CSS/SCSS/SASS/LESS file, the AI:
+   - Identifies color variables (CSS custom properties, SCSS/SASS variables, LESS variables)
+   - Detects direct color values in properties (background-color, color, border-color, etc.)
+   - Determines which colors should change based on the event theme
+
+2. **Smart Replacement**: The AI suggests specific replacements from your event's color palette
+
+3. **Automatic Backup**: Original files are backed up as `<name>.original.<ext>` before changes
+
+### Benefits over regex-based approach
+
+- **Context-aware**: Understands which colors are thematic vs. structural
+- **Framework-agnostic**: Works with any CSS preprocessor or custom naming conventions
+- **Intelligent**: Considers the event description to make appropriate color choices
+- **Safe**: Creates backups and can be reverted using `doodlify restore`
+
+### Example Output
+
+```
+🎨 Using AI-powered color detection for theme transformation...
+  📁 Found 3 style file(s)
+  🔍 styles/theme.scss: Found 5 color change(s)
+    ✓ Replace primary brand color with Halloween orange
+    ✓ Update secondary accent to dark purple
+    ✓ Change header background to spooky black
+    💾 Saved changes to styles/theme.scss
+```
 
 ## 📚 Documentation
 
