@@ -348,9 +348,15 @@ class Orchestrator:
             traceback.print_exc()
             return False
 
-    def process(self, event_id: Optional[str] = None, only: Optional[List[str]] = None, force: bool = False) -> bool:
+    def process(self, event_id: Optional[str] = None, only: Optional[List[str]] = None, force: bool = False, text_only: bool = False) -> bool:
         """
         Process phase: Process all active unprocessed events.
+        
+        Args:
+            event_id: Specific event ID to process
+            only: List of specific files to process
+            force: Force reprocess even if backups exist
+            text_only: Only reprocess HTML/text files (skip image transformation)
         
         Returns:
             True if processing successful, False otherwise
@@ -394,7 +400,7 @@ class Orchestrator:
             print(f"Processing {len(events_to_process)} event(s)...\n")
             
             for event in events_to_process:
-                success = self._process_event(event, only=only, force=force)
+                success = self._process_event(event, only=only, force=force, text_only=text_only)
                 if not success:
                     print(f"✗ Failed to process event: {event.name}")
                     return False
@@ -408,8 +414,15 @@ class Orchestrator:
             traceback.print_exc()
             return False
     
-    def _process_event(self, event: EventLock, only: Optional[List[str]] = None, force: bool = False) -> bool:
-        """Process a single event."""
+    def _process_event(self, event: EventLock, only: Optional[List[str]] = None, force: bool = False, text_only: bool = False) -> bool:
+        """Process a single event.
+        
+        Args:
+            event: Event to process
+            only: List of specific files to process
+            force: Force reprocess even if backups exist
+            text_only: Only reprocess HTML/text files (skip image transformation)
+        """
         print(f"\n{'=' * 60}")
         print(f"🎨 Processing: {event.name}")
         print(f"{'=' * 60}")
@@ -507,23 +520,29 @@ class Orchestrator:
             if only:
                 only_set = set([str(Path(p).as_posix()).lstrip('/') for p in only])
 
-            # Process image files (respect --only before logging)
+            # Process image files (respect --only before logging, skip if text_only)
             image_candidates = list(analysis.image_files or [])
             if only_set is not None:
                 image_candidates = [p for p in image_candidates if (p in only_set or Path(p).name in only_set)]
-            if image_candidates:
-                print(f"\n🖼️  Processing {len(image_candidates)} image(s)...")
-                image_files = self._process_images(event, image_candidates, only=only_set, force=force, palette=selected_palette)
-                modified_files.extend(image_files)
+            
+            if not text_only:
+                if image_candidates:
+                    print(f"\n🖼️  Processing {len(image_candidates)} image(s)...")
+                    image_files = self._process_images(event, image_candidates, only=only_set, force=force, palette=selected_palette)
+                    modified_files.extend(image_files)
+            else:
+                print(f"\n⏭️  Skipping image transformation (--text-only mode)")
 
             # Inject HTML fallbacks for processed images (dialect-aware)
+            # In text-only mode, this will reprocess HTML files to fix onerror attributes
             try:
-                if modified_files:
+                if image_candidates:
+                    print(f"\n📝 Injecting onerror fallbacks in HTML/text files...")
                     fallback_modified = self._inject_image_fallbacks(image_candidates)
                     if fallback_modified:
                         modified_files.extend(fallback_modified)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  ⚠️  Failed to inject fallbacks: {e}")
 
             # Process text files (respect --only before logging)
             text_candidates = list(analysis.text_files or [])
