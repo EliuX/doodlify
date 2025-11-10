@@ -538,7 +538,8 @@ class Orchestrator:
             try:
                 if image_candidates:
                     print(f"\n📝 Injecting onerror fallbacks in HTML/text files...")
-                    fallback_modified = self._inject_image_fallbacks(image_candidates)
+                    # Force rewrite in text-only mode to fix malformed attributes
+                    fallback_modified = self._inject_image_fallbacks(image_candidates, force_rewrite=text_only)
                     if fallback_modified:
                         modified_files.extend(fallback_modified)
             except Exception as e:
@@ -1087,10 +1088,15 @@ This automated customization includes:
                     continue
         return modified
 
-    def _inject_image_fallbacks(self, image_paths: List[str]) -> List[str]:
+    def _inject_image_fallbacks(self, image_paths: List[str], force_rewrite: bool = False) -> List[str]:
         """Inject onerror fallbacks for <img> tags across supported dialects (HTML/TSX/JSX/Vue/Svelte).
         - For each processed image, find usages and add onerror handler pointing to .original variant if not already present.
-        - Idempotent: will not duplicate onerror if present.
+        - Idempotent: will not duplicate onerror if present (unless force_rewrite=True).
+        
+        Args:
+            image_paths: List of image file paths
+            force_rewrite: If True, rewrites onerror even if already present (useful for fixing malformed attributes)
+        
         Returns list of modified repo-relative files (including backups).
         """
         if not image_paths:
@@ -1120,14 +1126,23 @@ This automated customization includes:
                     txt = f.read_text(encoding='utf-8', errors='ignore')
                     new_txt = txt
                     for name, backup in pairs:
+                        if force_rewrite:
+                            # Remove existing onerror attributes first, then inject new ones
+                            # Match img tags with this src and remove any existing onerror
+                            remove_pattern = re.compile(
+                                rf"(<img[^>]*?src=(?:'|\")([^'\"]*{re.escape(name)})['\"][^>]*?)\s*onerror=['\"][^'\"]*['\"]([^>]*?)(\s*/?\s*>)",
+                                re.IGNORECASE | re.DOTALL
+                            )
+                            new_txt = remove_pattern.sub(r"\1\3\4", new_txt)
+                        
                         # Match <img ... src="...name..."> without an onerror already on the same tag
                         # Use DOTALL to match across newlines, capture optional self-closing slash with closing bracket
                         pattern = re.compile(rf"(<img[^>]*?src=(?:'|\")([^'\"]*{re.escape(name)})['\"][^>]*?)(\s*/?\s*>)", re.IGNORECASE | re.DOTALL)
                         def _inject(m):
                             tag_start = m.group(1)
                             closing = m.group(3)
-                            # If already has onerror, skip
-                            if re.search(r"onerror=", tag_start, re.IGNORECASE):
+                            # If already has onerror, skip (unless force_rewrite removed it above)
+                            if not force_rewrite and re.search(r"onerror=", tag_start, re.IGNORECASE):
                                 return m.group(0)
                             # Normalize closing: remove extra whitespace, keep / if present, add space before >
                             normalized_closing = " />" if "/" in closing else ">"
