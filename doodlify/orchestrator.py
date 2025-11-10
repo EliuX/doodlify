@@ -150,6 +150,15 @@ class Orchestrator:
                         print(f"  ⚠️  Failed to commit lock: {ce}")
             else:
                 print("✓ Using cached global analysis")
+                # Still mark events as analyzed when using cache
+                try:
+                    lock = self.config_manager.lock
+                    for e in lock.events:
+                        if not e.progress.analyzed:
+                            e.progress.analyzed = True
+                    self.config_manager.save_lock()
+                except Exception:
+                    pass
             
             # Check active events
             active_events = self.config_manager.get_active_events()
