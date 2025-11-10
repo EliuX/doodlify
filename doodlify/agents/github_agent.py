@@ -1,94 +1,112 @@
 """
-GitHub agent using Haystack AI Agent with MCP tools.
+GitHub agent using direct REST API calls.
 """
 
-import shutil
-from typing import List, Dict, Any
-
-from haystack.components.agents import Agent
-from haystack.components.generators.chat import OpenAIChatGenerator
-from haystack.dataclasses import ChatMessage
-from haystack.utils import Secret
-from haystack_integrations.tools.mcp import MCPTool, StdioServerInfo, MCPToolset
-
-
-class SafeMCPTool(MCPTool):
-    """MCP Tool wrapper that prevents deepcopy issues in Haystack Agent."""
-
-    def __deepcopy__(self, memo):
-        return self  # Do not copy, reuse the instance
+import requests
+from typing import List, Dict, Any, Optional
 
 
 class GitHubAgent:
-    """GitHub operations agent using Haystack Agent with MCP tools."""
+    """GitHub operations agent using direct REST API calls."""
 
     def __init__(self, github_token: str, openai_api_key: str):
         self.github_token = github_token
         self.openai_api_key = openai_api_key
-        self.server_info = self._get_server_info()
-        self.tools = self._create_toolset()
-        self.agent = self._create_agent()
-
-    def _get_server_info(self) -> StdioServerInfo:
-        """Get MCP server info based on available tooling."""
-        has_docker = shutil.which("docker") is not None
-
-        github_mcp_server_env = {
-            "GITHUB_PERSONAL_ACCESS_TOKEN": self.github_token,
-            "GITHUB_DYNAMIC_TOOLSETS": "1"
+        self.base_url = "https://api.github.com"
+        self.headers = {
+            "Authorization": f"token {github_token}",
+            "Accept": "application/vnd.github.v3+json"
         }
 
-        if has_docker:
-            return StdioServerInfo(
-                command="docker",
-                args=[
-                    "run",
-                    "-i",
-                    "--rm",
-                    "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
-                    "-e", "GITHUB_TOOLSETS",
-                    "mcp/github"
-                ],
-                env=github_mcp_server_env,
-            )
-        else:
-            return StdioServerInfo(
-                command="npx",
-                args=[
-                    "-y",
-                    "@modelcontextprotocol/server-github"
-                ],
-                env=github_mcp_server_env,
-            )
+    def search_issues(self, owner: str, repo: str, query: str, labels: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Search for issues in a repository.
+        
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            query: Search query
+            labels: Optional list of labels to filter by
+            
+        Returns:
+            List of matching issues
+        """
+        # Build search query
+        q_parts = [f"repo:{owner}/{repo}", "is:issue", query]
+        if labels:
+            for label in labels:
+                q_parts.append(f"label:{label}")
+        
+        search_query = " ".join(q_parts)
+        url = f"{self.base_url}/search/issues"
+        params = {"q": search_query, "per_page": 100}
+        
+        try:
+            response = requests.get(url, headers=self.headers, params=params, timeout=30)
+            response.raise_for_status()
+            return response.json().get("items", [])
+        except Exception as e:
+            print(f"Warning: GitHub search failed: {e}")
+            return []
 
-    def _create_toolset(self):
-        return MCPToolset(
-            server_info=self.server_info,
-            tool_names=[
-                "get_file_contents",
-                "create_issue",
-                "search_issues",
-                "list_issues",
-                "create_branch",
-                "push_files",
-                "create_pull_request"
-            ]  # Omit to load all tools, but may overwhelm LLM if many
-        )
+    def create_issue(self, owner: str, repo: str, title: str, body: str, labels: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+        """Create a new issue.
+        
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            title: Issue title
+            body: Issue body
+            labels: Optional list of labels
+            
+        Returns:
+            Created issue data or None on failure
+        """
+        url = f"{self.base_url}/repos/{owner}/{repo}/issues"
+        payload = {
+            "title": title,
+            "body": body,
+            "labels": labels or []
+        }
+        
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Warning: Failed to create issue: {e}")
+            return None
 
-    def _create_agent(self) -> Agent:
-        """Create Haystack agent with MCP tools."""
-        agent = Agent(
-            chat_generator=OpenAIChatGenerator(api_key=Secret.from_token(self.openai_api_key)),
-            system_prompt="""
-            You can operate GitHub repositories: read files, create/search issues, create branches/PRs. 
-            When invoking tool "search_issues" you must include 'is:issue state:open' as prefix.
-            Be concise.
-            """,
-            tools=self.tools,
-        )
-        agent.warm_up()
-        return agent
+    def create_or_find_issue(self, owner: str, repo: str, title: str, body: str, labels: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+        """Create an issue only if it doesn't already exist (dedupe by doodlify-proposal label).
+        
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            title: Issue title
+            body: Issue body
+            labels: Optional list of labels (doodlify-proposal will be added automatically)
+            
+        Returns:
+            Existing or newly created issue data, or None on failure
+        """
+        # Ensure doodlify-proposal label is present
+        labels = labels or []
+        if "doodlify-proposal" not in labels:
+            labels.append("doodlify-proposal")
+        
+        # Search for existing issues with this label and similar title
+        existing = self.search_issues(owner, repo, f"{title}", labels=["doodlify-proposal"])
+        
+        # Check if any existing issue has the exact title
+        for issue in existing:
+            if issue.get("title", "").strip() == title.strip():
+                print(f"  ℹ️  Issue already exists: #{issue['number']} - {title}")
+                return issue
+        
+        # Create new issue
+        print(f"  ✓ Creating issue: {title}")
+        return self.create_issue(owner, repo, title, body, labels)
 
-    def run(self, messages: List[ChatMessage]) -> Dict[str, Any]:
-        """Run the agent with a list of messages."""
-        return self.agent.run(messages=messages)
+    def run(self, messages: List) -> Dict[str, Any]:
+        """Compatibility method for orchestrator (not used for direct API calls)."""
+        return {"messages": []}

@@ -62,7 +62,7 @@ class Orchestrator:
         print("=" * 60)
         
         try:
-            # Load configuration
+            # Load configuration first to detect mode
             config = self.config_manager.load_config()
             print(f"✓ Configuration loaded: {config.project.name}")
             
@@ -84,18 +84,16 @@ class Orchestrator:
             # Initialize Git agent and clone/update repository
             repo_url = f"https://{self.github_token}@github.com/{self.repo_name}.git"
             self.git_agent = GitAgent(repo_url)
-            
             base_branch = config.project.targetBranch or "main"
             repo_path = self.git_agent.clone_or_update(base_branch)
             print(f"✓ Repository cloned/updated at: {repo_path}")
             
-            # Ensure the lock file is written inside the workspace repo directory
-            # Keep the derived filename (e.g., config-lock.json or event.manifest-lock.json)
-            try:
-                derived_lock_name = self.config_manager.lock_path.name
-                self.config_manager.lock_path = Path(repo_path) / derived_lock_name
-            except Exception:
-                pass
+            # Set repo_path on config_manager and align lock
+            self.config_manager.repo_path = repo_path
+            self.config_manager.align_lock_with_workspace(self.repo_name)
+            
+            # Relocate any legacy lock living inside the repo working tree
+            self._migrate_legacy_lock(repo_path)
             
             # Optional: load repo-level manifest (event.manifest.json) to override config
             manifest_path = Path(repo_path) / "event.manifest.json"
@@ -131,6 +129,25 @@ class Orchestrator:
                 if analysis.improvement_suggestions:
                     print(f"\n📝 Reporting {len(analysis.improvement_suggestions)} improvement suggestion(s) to GitHub issues (deduped)...")
                     self._report_suggestions(analysis.improvement_suggestions)
+                # Mark all events as analyzed for status visibility
+                try:
+                    lock = self.config_manager.lock
+                    for e in lock.events:
+                        e.progress.analyzed = True
+                    self.config_manager.save_lock()
+                except Exception:
+                    pass
+                
+                # Commit lock if manifest mode (in-repo lock)
+                if self.config_manager._is_manifest_mode:
+                    try:
+                        print("\n💾 Committing lock file to base branch...")
+                        self.git_agent.repo.index.add([str(self.config_manager.lock_path.relative_to(repo_path))])
+                        if self.git_agent.repo.is_dirty():
+                            self.git_agent.repo.index.commit("chore: update event.manifest-lock.json after analysis")
+                            print("  ✓ Lock committed to base branch")
+                    except Exception as ce:
+                        print(f"  ⚠️  Failed to commit lock: {ce}")
             else:
                 print("✓ Using cached global analysis")
             
@@ -155,36 +172,89 @@ class Orchestrator:
         data = (title.strip() + "\n" + body.strip()).encode("utf-8")
         return hashlib.sha256(data).hexdigest()
 
-    def _report_suggestions(self, suggestions: List[dict]) -> None:
-        """Lightweight suggestion reporting.
+    def _migrate_legacy_lock(self, repo_path: Path) -> None:
+        """Move legacy lock files from the repo working tree to the external locks dir.
 
-        This implementation intentionally does NOT call GitHub. It only records
-        unique suggestions into the lock file to avoid duplicates on future runs.
+        Prior versions stored the lock alongside the repo checkout (e.g., `<repo>/config-lock.json`).
+        This caused git checkout conflicts. We now keep locks under
+        `.doodlify-workspace/<repo>/.doodlify-locks/<derived-lock-name>`.
+        This helper detects the legacy file and moves it there, updating `self.config_manager.lock_path`.
+        """
+        try:
+            # Derive the intended external lock path
+            self.config_manager.align_lock_with_workspace(self.repo_name)
+            target_lock = self.config_manager.lock_path
+            # Compute legacy path candidate inside repo
+            stem = self.config_manager.config_path.name
+            if stem.endswith(".json"):
+                base = stem[:-5]
+                legacy_name = f"{base}-lock.json"
+            else:
+                legacy_name = f"{stem}-lock.json"
+            legacy_path = Path(repo_path) / legacy_name
+            if legacy_path.exists():
+                # Ensure target dir exists
+                target_dir = target_lock.parent
+                target_dir.mkdir(parents=True, exist_ok=True)
+                # Move legacy file to target location (overwrite with latest)
+                data = json.loads(legacy_path.read_text(encoding='utf-8'))
+                target_lock.write_text(json.dumps(data, indent=2), encoding='utf-8')
+                # Remove legacy file to avoid future git conflicts
+                try:
+                    legacy_path.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            # Non-fatal; best effort
+            pass
+
+    def _report_suggestions(self, suggestions: List[dict]) -> None:
+        """Report improvement suggestions to GitHub with dedupe using doodlify-proposal label.
+        
+        Also records suggestions in lock file to avoid re-reporting on future runs.
         """
         try:
             lock = self.config_manager.lock
             reported = lock.reported_suggestions or []
             existing = {item.get("fingerprint") for item in reported}
 
+            github_agent = GitHubAgent(self.github_token, self.openai_api_key)
+            
             new_entries = []
             for s in suggestions or []:
                 title = (s.get("title") or "Improvement suggestion").strip()
                 body = (s.get("body") or "").strip()
                 fp = self._fingerprint(title, body)
+                
+                # Skip if already reported in lock
                 if fp in existing:
+                    print(f"  ⏭️  Skipping (already reported): {title}")
                     continue
-                new_entries.append({
-                    "title": title,
-                    "fingerprint": fp,
-                    "labels": s.get("labels") or [],
-                    "reported_at": datetime.utcnow().isoformat(),
-                })
+                
+                # Try to create issue (GitHub agent will dedupe by label)
+                labels = s.get("labels") or []
+                issue = github_agent.create_or_find_issue(
+                    self.owner, 
+                    self.repo, 
+                    title, 
+                    body, 
+                    labels
+                )
+                
+                if issue:
+                    new_entries.append({
+                        "title": title,
+                        "fingerprint": fp,
+                        "issue_number": issue.get("number"),
+                        "labels": labels,
+                        "reported_at": datetime.utcnow().isoformat(),
+                    })
 
             if new_entries:
                 lock.reported_suggestions = reported + new_entries
                 self.config_manager.save_lock()
         except Exception as e:
-            print(f"Warning: failed to record suggestions: {e}")
+            print(f"Warning: failed to report suggestions: {e}")
 
     def restore_files(self, event_id: str, files: List[str]) -> bool:
         """Restore selected files from their `.original` backups and reset their processed state.
@@ -194,7 +264,7 @@ class Orchestrator:
         - Marks file status as pending so it can be reprocessed
         """
         try:
-            # Ensure repo is available
+            # Load config and ensure repo is available
             cfg = self.config_manager.config
             if not self.git_agent:
                 repo_url = f"https://{self.github_token}@github.com/{self.repo_name}.git"
@@ -202,13 +272,13 @@ class Orchestrator:
                 base_branch = cfg.project.targetBranch or "main"
                 repo_path = self.git_agent.clone_or_update(base_branch)
                 print(f"Repository ready at: {repo_path}")
-
-                # Align lock path with workspace repo directory
-                try:
-                    derived_lock_name = self.config_manager.lock_path.name
-                    self.config_manager.lock_path = Path(repo_path) / derived_lock_name
-                except Exception:
-                    pass
+                
+                # Set repo_path and align lock
+                self.config_manager.repo_path = repo_path
+                self.config_manager.align_lock_with_workspace(self.repo_name)
+                
+                # Relocate any legacy lock living inside the repo working tree
+                self._migrate_legacy_lock(repo_path)
 
             # Normalize inputs
             targets = [str(Path(p).as_posix()).lstrip('/') for p in files]
@@ -281,13 +351,13 @@ class Orchestrator:
                 base_branch = config.project.targetBranch or "main"
                 repo_path = self.git_agent.clone_or_update(base_branch)
                 print(f"Repository ready at: {repo_path}")
-
-                # Ensure the lock file is written/read inside the workspace repo directory
-                try:
-                    derived_lock_name = self.config_manager.lock_path.name
-                    self.config_manager.lock_path = Path(repo_path) / derived_lock_name
-                except Exception:
-                    pass
+                
+                # Set repo_path and align lock
+                self.config_manager.repo_path = repo_path
+                self.config_manager.align_lock_with_workspace(self.repo_name)
+                
+                # Relocate any legacy lock living inside the repo working tree
+                self._migrate_legacy_lock(repo_path)
 
             # Determine events to process
             if event_id:
@@ -523,6 +593,16 @@ class Orchestrator:
                 if short_rel not in only:
                     continue
 
+            # Skip backup files to prevent processing backup-of-backup cycles
+            try:
+                if self.git_agent.is_backup_path(full_path):
+                    print(f"  ⏭️  Skipping backup file: {rel_path}")
+                    file_status[rel_path] = {"status": "skipped", "updated_at": datetime.utcnow().isoformat(), "details": "backup file"}
+                    self.config_manager.update_event_progress(event.id, file_status=file_status)
+                    continue
+            except Exception:
+                pass
+
             # Determine backup and choose safe source when reprocessing
             backup_full = self.git_agent.resolve_existing_backup(full_path)
             backup_rel_path = None
@@ -736,7 +816,7 @@ Generated by Doodlify 🎨
             True if push successful, False otherwise
         """
         print("\n" + "=" * 60)
-        print("🚀 PUSH PHASE")
+        print(" PUSH PHASE")
         print("=" * 60)
         
         try:
@@ -748,9 +828,15 @@ Generated by Doodlify 🎨
                 base_branch = cfg.project.targetBranch or "main"
                 repo_path = self.git_agent.clone_or_update(base_branch)
                 print(f"Repository ready at: {repo_path}")
-
-            # Get events that are processed but not pushed
-            lock = self.config_manager.lock
+                
+                # Set repo_path and align lock
+                self.config_manager.repo_path = repo_path
+                self.config_manager.align_lock_with_workspace(self.repo_name)
+                
+                # Relocate any legacy lock living inside the repo working tree
+                self._migrate_legacy_lock(repo_path)
+            
+            lock = self.config_manager.load_lock()
             events_to_push = [
                 e for e in lock.events
                 if e.progress.processed and not e.progress.pushed

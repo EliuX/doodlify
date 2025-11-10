@@ -277,6 +277,9 @@ class GitAgent:
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {relative_path}")
         
+        # If already a backup file, do NOT create a backup-of-a-backup
+        if self.is_backup_path(file_path):
+            return str(file_path.relative_to(self.repo_path))
         # Create backup using new scheme: <name>.original.<ext>
         backup_path = self.get_backup_path(file_path)
         shutil.copy2(file_path, backup_path)
@@ -287,25 +290,38 @@ class GitAgent:
         """Return backup path using new scheme: <name>.original.<ext>.
         If there is no suffix, append `.original` at the end.
         """
+        # If caller passed a backup path already, return it unchanged
+        if self.is_backup_path(file_path):
+            return file_path
         if file_path.suffix:
             # e.g., hero.png -> hero.original.png
             return file_path.with_name(f"{file_path.stem}.original{file_path.suffix}")
         # No suffix: fallback to append .original
         return file_path.with_name(file_path.name + '.original')
     
-    def get_legacy_backup_path(self, file_path: Path) -> Path:
-        """Legacy backup scheme: <name>.<ext>.original (kept for compatibility)."""
-        return file_path.with_suffix(file_path.suffix + '.original')
-    
     def resolve_existing_backup(self, file_path: Path) -> Optional[Path]:
-        """Return an existing backup path only if it matches the new scheme.
-        New scheme: <name>.original.<ext>
-        Legacy backups (<name>.<ext>.original) are intentionally ignored.
+        """Return path to an existing backup.
+        - If the given file_path is itself a backup, return it.
+        - Otherwise, check for the new-scheme backup (<name>.original.<ext>) or no-ext '.original'.
         """
+        if self.is_backup_path(file_path):
+            return file_path
         new_path = self.get_backup_path(file_path)
         if new_path.exists():
             return new_path
         return None
+
+    def is_backup_path(self, file_path: Path) -> bool:
+        """Detect whether a path represents a backup file for the supported schemes.
+        Matches:
+        - New scheme: <name>.original.<ext>
+        - No-ext scheme: <name>.original
+        """
+        # If file has an extension, we consider it a backup when the stem ends with '.original'
+        if file_path.suffix:
+            return file_path.stem.endswith('.original')
+        # If file has no extension, consider it a backup if the name ends with '.original'
+        return file_path.name.endswith('.original')
 
     def cleanup(self) -> None:
         """Clean up local repository."""

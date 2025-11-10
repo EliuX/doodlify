@@ -13,10 +13,16 @@ from .models import Config, ConfigLock, EventLock, EventProgress, AnalysisResult
 
 
 class ConfigManager:
-    """Manages configuration and lock files."""
+    """Manages configuration and lock files.
+    
+    Supports two modes:
+    - config.json: lock stored in .doodlify-workspace/config-lock.json keyed by repo folder name
+    - event.manifest.json: lock stored in repo root as event.manifest-lock.json (committed)
+    """
 
-    def __init__(self, config_path: str = "config.json", lock_path: Optional[str] = None):
+    def __init__(self, config_path: str = "config.json", lock_path: Optional[str] = None, repo_path: Optional[Path] = None):
         self.config_path = Path(config_path)
+        self.repo_path = repo_path  # Set by orchestrator after clone
         # Derive lock file name if not explicitly provided
         if lock_path is None:
             # Replace extension with -lock.json, e.g., config.json -> config-lock.json, event.manifest.json -> event.manifest-lock.json
@@ -32,6 +38,7 @@ class ConfigManager:
         self._config: Optional[Config] = None
         self._lock: Optional[ConfigLock] = None
         self._tz: Optional[ZoneInfo] = None
+        self._is_manifest_mode = False  # Set during load_config
 
     def load_config(self) -> Config:
         """Load and validate configuration file."""
@@ -42,38 +49,75 @@ class ConfigManager:
             data = json.load(f)
 
         self._config = Config(**data)
+        # Detect mode: event.manifest.json means in-repo lock
+        self._is_manifest_mode = self.config_path.name.startswith("event.manifest")
         return self._config
 
     def load_lock(self) -> ConfigLock:
-        """Load lock file or create from config if doesn't exist."""
+        """Load lock file or create from config if doesn't exist.
+        
+        For config.json: reads from .doodlify-workspace/config-lock.json[repo_folder]
+        For event.manifest.json: reads from <repo>/event.manifest-lock.json
+        """
+        if not self._config:
+            self.load_config()
+
+        # Determine actual lock path based on mode
+        if self._is_manifest_mode:
+            # In-repo lock at repo root
+            if self.repo_path:
+                self.lock_path = self.repo_path / "event.manifest-lock.json"
+            else:
+                # Fallback if repo_path not set yet
+                self.lock_path = Path("event.manifest-lock.json")
+        else:
+            # Workspace lock keyed by repo folder
+            self.lock_path = Path(".doodlify-workspace") / "config-lock.json"
+
         if self.lock_path.exists():
             with open(self.lock_path, 'r', encoding="utf-8") as f:
-                data = json.load(f)
-            self._lock = ConfigLock(**data)
+                raw = json.load(f)
+            
+            if self._is_manifest_mode:
+                # Single-root payload
+                self._lock = ConfigLock(**raw)
+            else:
+                # Map keyed by repo folder name
+                repo_key = self.repo_path.name if self.repo_path else "default"
+                data = raw.get(repo_key)
+                if not data:
+                    # Initialize entry for this repo
+                    self._lock = self._create_new_lock()
+                    raw[repo_key] = self._lock.model_dump()
+                    self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(self.lock_path, 'w', encoding="utf-8") as wf:
+                        json.dump(raw, wf, indent=2)
+                else:
+                    self._lock = ConfigLock(**data)
         else:
-            # Create lock from config
-            if not self._config:
-                self.load_config()
-
-            event_locks = [
-                EventLock(
-                    **event.model_dump(),
-                    progress=EventProgress(status="pending"),
-                    analysis=None,
-                    last_executed=None,
-                )
-                for event in self._config.events
-            ]
-
-            self._lock = ConfigLock(
-                project=self._config.project,
-                defaults=self._config.defaults,
-                events=event_locks,
-                global_analysis=None,
-            )
+            # Create new lock
+            self._lock = self._create_new_lock()
             self.save_lock()
 
         return self._lock
+    
+    def _create_new_lock(self) -> ConfigLock:
+        """Create a new lock from current config."""
+        event_locks = [
+            EventLock(
+                **event.model_dump(),
+                progress=EventProgress(status="pending"),
+                analysis=None,
+                last_executed=None,
+            )
+            for event in self._config.events
+        ]
+        return ConfigLock(
+            project=self._config.project,
+            defaults=self._config.defaults,
+            events=event_locks,
+            global_analysis=None,
+        )
 
     def apply_overrides(self, overrides: dict) -> None:
         """Apply partial overrides to the current config (e.g., from repo manifest).
@@ -103,19 +147,38 @@ class ConfigManager:
         self.save_lock()
 
     def save_lock(self) -> None:
-        """Save lock file to disk."""
+        """Save lock file to disk.
+        
+        For config.json: updates the repo entry in .doodlify-workspace/config-lock.json
+        For event.manifest.json: writes to <repo>/event.manifest-lock.json
+        """
         if not self._lock:
             raise ValueError("No lock data to save")
 
         self._lock.last_updated = datetime.utcnow().isoformat()
 
-        # Ensure parent exists if lock_path includes directories
+        # Ensure parent exists
         lock_parent = self.lock_path.parent
         if lock_parent and not lock_parent.exists():
             lock_parent.mkdir(parents=True, exist_ok=True)
 
-        with open(self.lock_path, 'w', encoding="utf-8") as f:
-            json.dump(self._lock.model_dump(), f, indent=2)
+        if self._is_manifest_mode:
+            # Single-root payload for manifest mode
+            with open(self.lock_path, 'w', encoding="utf-8") as f:
+                json.dump(self._lock.model_dump(), f, indent=2)
+        else:
+            # Map keyed by repo folder for config mode
+            repo_key = self.repo_path.name if self.repo_path else "default"
+            raw = {}
+            if self.lock_path.exists():
+                try:
+                    with open(self.lock_path, 'r', encoding="utf-8") as f:
+                        raw = json.load(f) or {}
+                except Exception:
+                    raw = {}
+            raw[repo_key] = self._lock.model_dump()
+            with open(self.lock_path, 'w', encoding="utf-8") as f:
+                json.dump(raw, f, indent=2)
 
     def get_event_lock(self, event_id: str) -> Optional[EventLock]:
         """Get lock data for a specific event."""
@@ -221,31 +284,29 @@ class ConfigManager:
         return [e for e in active_events if not e.progress.processed]
 
     def align_lock_with_workspace(self, repo_name: Optional[str], workspace_dir: str = ".doodlify-workspace") -> None:
-        """Point lock_path to the workspace repo lock if it exists.
-
-        This ensures commands that don't instantiate the orchestrator (e.g., `status`)
-        still read the same lock file that `process`/`analyze` wrote under the cloned repo.
-
+        """Align lock_path based on mode.
+        
+        For config.json: .doodlify-workspace/config-lock.json (keyed by repo folder)
+        For event.manifest.json: <repo>/event.manifest-lock.json (in-repo, committed)
+        
         Args:
-            repo_name: "owner/repo" or just "repo". If None or invalid, no-op.
+            repo_name: "owner/repo" or just "repo". Used to derive repo folder name.
             workspace_dir: Root directory where the repo was cloned.
         """
         try:
             if not repo_name:
                 return
             repo_basename = repo_name.split('/')[-1]
-            # Derive file name from current config (e.g., config.json -> config-lock.json)
-            stem = self.config_path.name
-            if stem.endswith(".json"):
-                base = stem[:-5]
-                derived = f"{base}-lock.json"
+            
+            if self._is_manifest_mode:
+                # In-repo lock
+                self.repo_path = Path(workspace_dir) / repo_basename
+                self.lock_path = self.repo_path / "event.manifest-lock.json"
             else:
-                derived = f"{stem}-lock.json"
-            candidate = Path(workspace_dir) / repo_basename / derived
-            if candidate.exists():
-                self.lock_path = candidate
+                # Workspace lock
+                self.repo_path = Path(workspace_dir) / repo_basename
+                self.lock_path = Path(workspace_dir) / "config-lock.json"
         except Exception:
-            # Non-fatal; fall back to existing lock_path
             pass
 
     @property
