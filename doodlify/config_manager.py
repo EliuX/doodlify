@@ -202,7 +202,11 @@ class ConfigManager:
         return None
 
     def update_event_progress(self, event_id: str, **kwargs) -> None:
-        """Update progress for an event."""
+        """Update progress for an event.
+        
+        Only updates the fields explicitly provided in kwargs.
+        Preserves all other fields to prevent accidental data loss.
+        """
         event_lock = self.get_event_lock(event_id)
         if not event_lock:
             raise ValueError(f"Event not found: {event_id}")
@@ -212,6 +216,31 @@ class ConfigManager:
                 setattr(event_lock.progress, key, value)
 
         self.save_lock()
+    
+    def record_event_error(self, event_id: str, error: str, preserve_progress: bool = True) -> None:
+        """Record an error for an event while optionally preserving progress flags.
+        
+        Args:
+            event_id: Event ID
+            error: Error message
+            preserve_progress: If True, preserves analyzed/processed/pushed flags
+        """
+        event_lock = self.get_event_lock(event_id)
+        if not event_lock:
+            raise ValueError(f"Event not found: {event_id}")
+        
+        update_kwargs = {
+            "status": "failed",
+            "error": error
+        }
+        
+        if preserve_progress:
+            # Preserve existing progress flags
+            update_kwargs["analyzed"] = event_lock.progress.analyzed
+            update_kwargs["processed"] = event_lock.progress.processed
+            update_kwargs["pushed"] = event_lock.progress.pushed
+        
+        self.update_event_progress(event_id, **update_kwargs)
 
     def update_event_analysis(self, event_id: str, analysis: AnalysisResult) -> None:
         """Update analysis results for an event."""

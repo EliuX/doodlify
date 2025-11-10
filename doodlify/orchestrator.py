@@ -566,11 +566,8 @@ class Orchestrator:
             
         except Exception as e:
             print(f"\n✗ Failed to process event: {e}")
-            self.config_manager.update_event_progress(
-                event.id,
-                status="failed",
-                error=str(e)
-            )
+            # Record error while preserving existing progress
+            self.config_manager.record_event_error(event.id, str(e), preserve_progress=True)
             import traceback
             traceback.print_exc()
             return False
