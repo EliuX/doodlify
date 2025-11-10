@@ -103,6 +103,15 @@ class AnalyzerAgent:
         has_og_image = self._detect_og_image(frontend_files)
         logger.info(f"Open Graph image meta tags detected: {has_og_image}")
 
+        # Extract a small color palette from CSS-like files
+        try:
+            palette = self._extract_palette(frontend_files)
+            if isinstance(ai_analysis, dict):
+                ai_analysis = dict(ai_analysis)
+                ai_analysis["palette"] = palette
+        except Exception:
+            pass
+
         ctx = {
             "image_files": image_files,
             "text_files": text_files,
@@ -698,6 +707,53 @@ class AnalyzerAgent:
             except Exception:
                 continue
         return False
+
+    def _extract_palette(self, files: List[Path], max_colors: int = 6) -> List[str]:
+        """Extract a simple color palette from CSS-like files.
+        Strategy:
+        - Collect hex colors (#rgb, #rrggbb)
+        - Collect values assigned to common vars: --primary, --secondary, --accent
+        - Return top unique colors preserving discovery order
+        """
+        hex_pattern = re.compile(r"#[0-9a-fA-F]{3,8}")
+        var_pattern = re.compile(r"--(?:primary|secondary|accent)\s*:\s*([^;]+);")
+        scss_var_pattern = re.compile(r"\$(?:primary|secondary|accent)\s*:\s*([^;]+);")
+        less_var_pattern = re.compile(r"@(?:primary|secondary|accent)\s*:\s*([^;]+);")
+        colors: List[str] = []
+        seen = set()
+        for p in files[:200]:
+            if p.suffix.lower() not in {'.css', '.scss', '.sass', '.less'}:
+                continue
+            try:
+                txt = p.read_text(encoding='utf-8', errors='ignore')
+            except Exception:
+                continue
+            # Vars first
+            for m in var_pattern.findall(txt) + scss_var_pattern.findall(txt) + less_var_pattern.findall(txt):
+                cand = m.strip()
+                # Normalize rgb(a) to hex is non-trivial; keep as-is if hex present inside
+                hexes = hex_pattern.findall(cand)
+                if hexes:
+                    for h in hexes:
+                        if h not in seen:
+                            seen.add(h)
+                            colors.append(h)
+                else:
+                    # Accept raw token if it looks like a color keyword
+                    token = cand.split()[0].strip(',')
+                    if token and token.lower() not in seen and len(token) <= 20:
+                        seen.add(token.lower())
+                        colors.append(token)
+                if len(colors) >= max_colors:
+                    return colors[:max_colors]
+            # Fallback: hex scan
+            for h in hex_pattern.findall(txt):
+                if h not in seen:
+                    seen.add(h)
+                    colors.append(h)
+                if len(colors) >= max_colors:
+                    return colors[:max_colors]
+        return colors[:max_colors]
 
     # --- Path normalization helpers ---
     def _normalize_paths(self, repo_path: Path, sources: List[str], items: List[str]) -> List[str]:

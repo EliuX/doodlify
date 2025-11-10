@@ -24,7 +24,8 @@
       "description": "Add festive Christmas decorations. Include snowflakes, Santa themes, winter colors (red, green, white). Keep it joyful and family-friendly.",
       "startDate": "2024-12-15",
       "endDate": "2024-12-27",
-      "branch": "christmas-2024"
+      "branch": "christmas-2024",
+      "useEventColorPalette": true
     },
     {
       "id": "new-year-2025",

@@ -23,6 +23,13 @@ class DefaultsConfig(BaseModel):
     """Default configuration for events."""
     selector: Optional[str] = Field(None, description="CSS selector for elements to modify")
     branchPrefix: Optional[str] = Field(None, description="Prefix for event branch names")
+    useEventColorPalette: Optional[bool] = Field(
+        default=False,
+        description=(
+            "If true, use a preset palette for the event (e.g., Christmas, Halloween) "
+            "instead of the app's extracted palette."
+        ),
+    )
     reportSuggestions: Dict[str, bool] = Field(
         default_factory=lambda: {
             # Optional by default
@@ -55,6 +62,12 @@ class EventConfig(BaseModel):
     startDate: str = Field(..., description="Event start date (YYYY-MM-DD)")
     endDate: str = Field(..., description="Event end date (YYYY-MM-DD)")
     branch: str = Field(..., description="Branch name for this event")
+    useEventColorPalette: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Override defaults.useEventColorPalette for this event; if true, use preset event palette."
+        ),
+    )
 
 
 class Config(BaseModel):

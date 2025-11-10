@@ -17,6 +17,7 @@ from .agents import ImageAgent, TextAgent, AnalyzerAgent
 from .agents.github_agent import GitHubAgent
 from .models import EventLock, AnalysisResult
 from haystack.dataclasses import ChatMessage
+import re
 
 
 class Orchestrator:
@@ -396,7 +397,18 @@ class Orchestrator:
                     analysis = AnalysisResult(**analysis_result)
                     self.config_manager.update_event_analysis(event.id, analysis)
             
+            # Select palette: event preset (if enabled) or analysis-derived palette
+            selected_palette = self._select_palette(event, analysis)
+
+            # Transform theme colors first (primary/secondary) so pages and images align
+            try:
+                theme_modified = self._transform_theme_colors(selected_palette)
+            except Exception as _:
+                theme_modified = []
+            
             modified_files = []
+            if theme_modified:
+                modified_files.extend(theme_modified)
             
             # Normalize "only" list to a set of repo-relative paths
             only_set: Optional[set] = None
@@ -409,9 +421,18 @@ class Orchestrator:
                 image_candidates = [p for p in image_candidates if (p in only_set or Path(p).name in only_set)]
             if image_candidates:
                 print(f"\n🖼️  Processing {len(image_candidates)} image(s)...")
-                image_files = self._process_images(event, image_candidates, only=only_set, force=force)
+                image_files = self._process_images(event, image_candidates, only=only_set, force=force, palette=selected_palette)
                 modified_files.extend(image_files)
-            
+
+            # Inject HTML fallbacks for processed images (dialect-aware)
+            try:
+                if modified_files:
+                    fallback_modified = self._inject_image_fallbacks(image_candidates)
+                    if fallback_modified:
+                        modified_files.extend(fallback_modified)
+            except Exception:
+                pass
+
             # Process text files (respect --only before logging)
             text_candidates = list(analysis.text_files or [])
             if only_set is not None:
@@ -471,7 +492,7 @@ class Orchestrator:
             traceback.print_exc()
             return False
     
-    def _process_images(self, event: EventLock, image_paths: List[str], only: Optional[set] = None, force: bool = False) -> List[str]:
+    def _process_images(self, event: EventLock, image_paths: List[str], only: Optional[set] = None, force: bool = False, palette: Optional[List[str]] = None) -> List[str]:
         """Process image files for an event."""
         modified = []
         
@@ -560,13 +581,18 @@ class Orchestrator:
                         print(f"    ↪ Using source: {str(source_path.relative_to(self.git_agent.repo_path))} (working file)")
                         source_for_api = source_path
 
-                    # Run image transformation using chosen source; write to working file
-                    output_bytes = self.image_agent.transform_image(
-                        source_for_api,
-                        event.name,
-                        event.description,
-                        output_path=full_path
-                    )
+                # Run image transformation using chosen source; write to working file
+                image_context = ""
+                if palette:
+                    # Provide palette guidance for model
+                    image_context = "Use this color palette where it fits the composition: " + ", ".join(palette[:6]) + ". Keep contrast and accessibility."
+                output_bytes = self.image_agent.transform_image(
+                    source_for_api,
+                    event.name,
+                    event.description,
+                    output_path=full_path,
+                    image_context=image_context,
+                )
                 finally:
                     # Cleanup temp if created
                     if temp_source and temp_source.exists():
@@ -877,3 +903,123 @@ This automated customization includes:
         except Exception as e:
             print(f"\n✗ Clear failed: {e}")
             return False
+
+    def _select_palette(self, event: EventLock, analysis: AnalysisResult) -> List[str]:
+        """Choose which palette to use: event preset (if configured) or analysis-derived palette."""
+        cfg = self.config_manager.config
+        # Determine flag: event override > defaults
+        use_event = getattr(event, 'useEventColorPalette', None)
+        if use_event is None:
+            use_event = bool(getattr(cfg.defaults, 'useEventColorPalette', False))
+        name = (event.name or event.id or "").lower()
+        if use_event:
+            # Very lightweight presets
+            if "christmas" in name or "xmas" in name:
+                return ["#C1121F", "#0B6E4F", "#FFFFFF", "#F7C948", "#125B50"]
+            if "halloween" in name:
+                return ["#FF7A00", "#1A1A1A", "#6B21A8", "#F97316", "#FDE047"]
+            if "new year" in name or "new-year" in name:
+                return ["#D4AF37", "#C0C0C0", "#000000", "#FFFFFF", "#8B5CF6"]
+        # fallback to analysis palette
+        try:
+            notes = getattr(analysis, 'notes', {}) or {}
+            palette = list(notes.get('palette') or [])
+            return palette
+        except Exception:
+            return []
+
+    def _transform_theme_colors(self, palette: List[str]) -> List[str]:
+        """Adjust theme primary/secondary colors in CSS/SCSS/LESS based on chosen palette.
+        - Replaces --primary/--secondary or $primary/$secondary or @primary/@secondary values.
+        - Backs up files before changes.
+        Returns list of modified repo-relative paths.
+        """
+        if not palette:
+            return []
+        primary = palette[0]
+        secondary = palette[1] if len(palette) > 1 else None
+        cfg = self.config_manager.config
+        sources = getattr(cfg.project, 'sources', []) or []
+        modified: List[str] = []
+        exts = {'.css', '.scss', '.sass', '.less'}
+        for src in (sources or ['']):
+            root = (self.git_agent.repo_path / src) if src else self.git_agent.repo_path
+            if not root.exists():
+                continue
+            for p in root.rglob('*'):
+                try:
+                    if p.suffix.lower() not in exts or not p.is_file():
+                        continue
+                    rel = str(p.relative_to(self.git_agent.repo_path))
+                    txt = p.read_text(encoding='utf-8', errors='ignore')
+                    new_txt = txt
+                    # CSS custom props
+                    new_txt = re.sub(r"(--primary\s*:\s*)([^;]+);", rf"\\1{primary};", new_txt)
+                    if secondary:
+                        new_txt = re.sub(r"(--secondary\s*:\s*)([^;]+);", rf"\\1{secondary};", new_txt)
+                    # SCSS variables
+                    new_txt = re.sub(r"(\$primary\s*:\s*)([^;]+);", rf"\\1{primary};", new_txt)
+                    if secondary:
+                        new_txt = re.sub(r"(\$secondary\s*:\s*)([^;]+);", rf"\\1{secondary};", new_txt)
+                    # LESS variables
+                    new_txt = re.sub(r"(@primary\s*:\s*)([^;]+);", rf"\\1{primary};", new_txt)
+                    if secondary:
+                        new_txt = re.sub(r"(@secondary\s*:\s*)([^;]+);", rf"\\1{secondary};", new_txt)
+                    if new_txt != txt:
+                        backup_rel = self.git_agent.backup_file(rel)
+                        p.write_text(new_txt, encoding='utf-8')
+                        modified.extend([rel, backup_rel])
+                except Exception:
+                    continue
+        return modified
+
+    def _inject_image_fallbacks(self, image_paths: List[str]) -> List[str]:
+        """Inject onerror fallbacks for <img> tags across supported dialects (HTML/TSX/JSX/Vue/Svelte).
+        - For each processed image, find usages and add onerror handler pointing to .original variant if not already present.
+        - Idempotent: will not duplicate onerror if present.
+        Returns list of modified repo-relative files (including backups).
+        """
+        if not image_paths:
+            return []
+        exts = {'.html', '.htm', '.tsx', '.jsx', '.vue', '.svelte'}
+        modified: List[str] = []
+        # Build map from original src to backup src
+        pairs = []
+        for p in image_paths:
+            stem = Path(p).stem
+            suffix = Path(p).suffix
+            # new scheme backup name: <name>.original<ext>
+            backup_name = f"{stem}.original{suffix}"
+            pairs.append((Path(p).name, backup_name))
+        # Scan all candidate files under sources
+        cfg = self.config_manager.config
+        sources = getattr(cfg.project, 'sources', []) or []
+        roots = [(self.git_agent.repo_path / s) for s in sources] or [self.git_agent.repo_path]
+        for root in roots:
+            if not root.exists():
+                continue
+            for f in root.rglob('*'):
+                try:
+                    if f.suffix.lower() not in exts or not f.is_file():
+                        continue
+                    rel = str(f.relative_to(self.git_agent.repo_path))
+                    txt = f.read_text(encoding='utf-8', errors='ignore')
+                    new_txt = txt
+                    for name, backup in pairs:
+                        # Match <img ... src="...name..."> without an onerror already on the same tag
+                        pattern = re.compile(rf"(<img[^>]*?src=(?:'|\")([^'\"]*{re.escape(name)})['\"][^>]*)(>)", re.IGNORECASE)
+                        def _inject(m):
+                            tag_start = m.group(1)
+                            closing = m.group(3)
+                            # If already has onerror, skip
+                            if re.search(r"onerror=", tag_start, re.IGNORECASE):
+                                return m.group(0)
+                            return tag_start + f" onerror=\"this.onerror=null;this.src='{backup}'\"" + closing
+                        new_txt = pattern.sub(_inject, new_txt)
+                    if new_txt != txt:
+                        backup_rel = self.git_agent.backup_file(rel)
+                        f.write_text(new_txt, encoding='utf-8')
+                        modified.extend([rel, backup_rel])
+                except Exception:
+                    continue
+        return modified
