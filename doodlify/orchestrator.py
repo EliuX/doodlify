@@ -1102,15 +1102,17 @@ This automated customization includes:
                     new_txt = txt
                     for name, backup in pairs:
                         # Match <img ... src="...name..."> without an onerror already on the same tag
-                        # Capture optional self-closing slash with the closing bracket
-                        pattern = re.compile(rf"(<img[^>]*?src=(?:'|\")([^'\"]*{re.escape(name)})['\"][^>]*?)(\s*/?>)", re.IGNORECASE)
+                        # Use DOTALL to match across newlines, capture optional self-closing slash with closing bracket
+                        pattern = re.compile(rf"(<img[^>]*?src=(?:'|\")([^'\"]*{re.escape(name)})['\"][^>]*?)(\s*/?\s*>)", re.IGNORECASE | re.DOTALL)
                         def _inject(m):
                             tag_start = m.group(1)
                             closing = m.group(3)
                             # If already has onerror, skip
                             if re.search(r"onerror=", tag_start, re.IGNORECASE):
                                 return m.group(0)
-                            return tag_start + f" onerror=\"this.onerror=null;this.src='{backup}'\"" + closing
+                            # Normalize closing: remove extra whitespace, keep / if present, add space before >
+                            normalized_closing = " />" if "/" in closing else ">"
+                            return tag_start + f" onerror=\"this.onerror=null;this.src='{backup}'\"" + normalized_closing
                         new_txt = pattern.sub(_inject, new_txt)
                     if new_txt != txt:
                         backup_rel = self.git_agent.backup_file(rel)
