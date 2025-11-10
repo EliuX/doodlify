@@ -75,6 +75,12 @@ class GitAgent:
         if not self.repo:
             raise RuntimeError("Repository not initialized")
         
+        # Clean up any unmerged index entries (e.g., from failed checkouts)
+        try:
+            self.repo.git.reset('--merge')
+        except Exception:
+            pass
+        
         # Ensure any local modifications are stashed before switching branches
         try:
             if self.repo.is_dirty(untracked_files=True) or bool(self.repo.untracked_files):
@@ -107,6 +113,17 @@ class GitAgent:
             # Create new branch
             new_branch = self.repo.create_head(branch_name)
             new_branch.checkout()
+        
+        # Clean up any unmerged entries after checkout (e.g., lock files)
+        try:
+            # Remove any unmerged lock files from index
+            for pattern in ['*-lock.json', 'config-lock.json', 'event.manifest-lock.json']:
+                try:
+                    self.repo.git.rm('--cached', '--force', pattern, '--ignore-unmatch')
+                except Exception:
+                    pass
+        except Exception:
+            pass
     
     def commit_changes(self, message: str, files: Optional[List[str]] = None) -> str:
         """Commit changes to the current branch."""

@@ -173,12 +173,11 @@ class Orchestrator:
         return hashlib.sha256(data).hexdigest()
 
     def _migrate_legacy_lock(self, repo_path: Path) -> None:
-        """Move legacy lock files from the repo working tree to the external locks dir.
+        """Move legacy lock files from the repo working tree to the workspace lock.
 
         Prior versions stored the lock alongside the repo checkout (e.g., `<repo>/config-lock.json`).
-        This caused git checkout conflicts. We now keep locks under
-        `.doodlify-workspace/<repo>/.doodlify-locks/<derived-lock-name>`.
-        This helper detects the legacy file and moves it there, updating `self.config_manager.lock_path`.
+        This caused git checkout conflicts. We now keep locks outside the repo tree.
+        This helper detects the legacy file, migrates it, and cleans up git index.
         """
         try:
             # Derive the intended external lock path
@@ -192,6 +191,15 @@ class Orchestrator:
             else:
                 legacy_name = f"{stem}-lock.json"
             legacy_path = Path(repo_path) / legacy_name
+            
+            # Clean up git index for this file if it exists there
+            if self.git_agent and self.git_agent.repo:
+                try:
+                    # Remove from index if present (handles unmerged entries)
+                    self.git_agent.repo.git.rm('--cached', '--force', legacy_name, '--ignore-unmatch')
+                except Exception:
+                    pass
+            
             if legacy_path.exists():
                 # Ensure target dir exists
                 target_dir = target_lock.parent
