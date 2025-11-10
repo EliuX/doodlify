@@ -372,6 +372,8 @@ class Orchestrator:
                     notes={},
                     improvement_suggestions=[],
                 )
+                # Using ad-hoc analysis; mark event as analyzed for status
+                self.config_manager.update_event_progress(event.id, analyzed=True)
             else:
                 analysis = event.analysis or self.config_manager.lock.global_analysis
                 if not analysis:
@@ -396,6 +398,9 @@ class Orchestrator:
                         pass
                     analysis = AnalysisResult(**analysis_result)
                     self.config_manager.update_event_analysis(event.id, analysis)
+                else:
+                    # Using cached analysis; mark as analyzed
+                    self.config_manager.update_event_progress(event.id, analyzed=True)
             
             # Select palette: event preset (if enabled) or analysis-derived palette
             selected_palette = self._select_palette(event, analysis)
@@ -538,7 +543,7 @@ class Orchestrator:
                 file_status[rel_path] = {"status": "missing", "updated_at": datetime.utcnow().isoformat()}
                 self.config_manager.update_event_progress(event.id, file_status=file_status)
                 continue
-
+            
             # Unsupported format guard
             if not self.image_agent.is_supported_format(full_path):
                 print(f"  ⚠️  Skipping unsupported format: {rel_path}")
@@ -581,18 +586,18 @@ class Orchestrator:
                         print(f"    ↪ Using source: {str(source_path.relative_to(self.git_agent.repo_path))} (working file)")
                         source_for_api = source_path
 
-                # Run image transformation using chosen source; write to working file
-                image_context = ""
-                if palette:
-                    # Provide palette guidance for model
-                    image_context = "Use this color palette where it fits the composition: " + ", ".join(palette[:6]) + ". Keep contrast and accessibility."
-                output_bytes = self.image_agent.transform_image(
-                    source_for_api,
-                    event.name,
-                    event.description,
-                    output_path=full_path,
-                    image_context=image_context,
-                )
+                    # Run image transformation using chosen source; write to working file
+                    image_context = ""
+                    if palette:
+                        # Provide palette guidance for model
+                        image_context = "Use this color palette where it fits the composition: " + ", ".join(palette[:6]) + ". Keep contrast and accessibility."
+                    output_bytes = self.image_agent.transform_image(
+                        source_for_api,
+                        event.name,
+                        event.description,
+                        output_path=full_path,
+                        image_context=image_context,
+                    )
                 finally:
                     # Cleanup temp if created
                     if temp_source and temp_source.exists():

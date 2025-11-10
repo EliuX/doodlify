@@ -242,6 +242,68 @@ doodlify push
 - Creates pull requests
 - Updates lock file with PR URLs
 
+### Push and PR workflow when you have local tweaks
+If you made additional edits inside the workspace repo (e.g., fixed CSS or HTML) after processing, commit them first and then run `doodlify push`:
+
+```bash
+# The workspace repository lives here
+cd .doodlify-workspace/<your-repo-name>
+
+# Commit your changes on the event branch (created during process)
+git status
+git add -A
+git commit -m "chore: manual fixes before PR"
+
+# Return to your doodlify project root and push/PR
+cd -
+doodlify push
+```
+
+Notes:
+- The push step looks at processed events that haven’t been pushed yet and creates PRs automatically.
+- The event branch naming is `<branchPrefix><event.branch>` (e.g., `feature/event/halloween-2025`).
+
+### Workflow for another event
+
+Sometimes you’ll want to run a new cycle for a different event (or re-run with different settings).
+
+- Activate or target the event explicitly:
+```bash
+# Re-run analysis (refreshes cache if needed)
+doodlify analyze
+
+# Process a specific event directly (bypasses date-based filtering)
+doodlify process --event-id <event-id>
+
+# Then push and open PRs
+doodlify push
+```
+
+- If you want to reprocess previously modified files for the same event, use either:
+  - `doodlify restore --event-id <event-id> --files <comma-separated files>` to restore originals and process again, or
+  - `doodlify process --event-id <event-id> --only <files> --force` to reprocess even if backups exist.
+
+- If you need a clean slate for an event (clears its state in the lock file):
+```bash
+doodlify clear --event-id <event-id>
+```
+
+Transition guidance:
+- Each event is processed on its own branch. Creating a new event branch is handled by `process`; it also auto-stashes any local, uncommitted changes in the workspace repo to avoid conflicts.
+- Best practice:
+  - Finish and push the current event’s branch (`doodlify push`).
+  - Commit any extra manual tweaks inside `.doodlify-workspace/<repo>` before switching.
+  - Run `doodlify analyze` (optional but recommended) and `doodlify process --event-id <next-event>` for the new event.
+
+## 📚 Documentation
+
+For focused, task-oriented guides, see the `docs/` folder:
+
+- [Push and PR workflow](docs/push-and-pr.md)
+- [Switching to another event](docs/switching-events.md)
+- [Reprocessing specific files](docs/reprocessing-files.md)
+- [Lock files and status](docs/lock-files-and-status.md)
+
 ## 🤖 AI Agents
 
 ### Analyzer Agent
@@ -313,70 +375,6 @@ The workflow:
 - Can be triggered manually
 - Commits `config-lock.json` to track state
 - Prevents duplicate processing
-
-## 📦 Distributing and Consuming Doodlify
-
-This repository ships build artifacts so client/target projects can adopt the tool without copying code.
-
-Artifacts (when a tag `vX.Y.Z` is pushed):
-- GitHub Release: `dist/*.whl` and `dist/*.tar.gz`
-- GHCR Docker image: `ghcr.io/<org>/doodlify:latest` and `ghcr.io/<org>/doodlify:vX.Y.Z`
-- Optional PyPI publish if credentials are configured
-
-### Client CI: Install from PyPI (preferred if published)
-```yaml
-jobs:
-  doodlify:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: |
-          python -m pip install --upgrade pip
-          pip install doodlify
-      - run: |
-          doodlify analyze --config event.manifest.json
-          doodlify process --config event.manifest.json
-          doodlify push --config event.manifest.json
-        env:
-          GITHUB_PERSONAL_ACCESS_TOKEN: ${{ secrets.GITHUB_PERSONAL_ACCESS_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GITHUB_REPO_NAME: ${{ github.repository }}
-```
-
-### Client CI: Install from GitHub Release
-```yaml
-    - name: Download wheel from latest release
-      uses: robinraju/release-downloader@v1.10
-      with:
-        repository: <org>/<repo>
-        latest: true
-        fileName: "*.whl"
-    - name: Install doodlify from wheel
-      run: |
-        python -m pip install --upgrade pip
-        pip install ./*.whl
-```
-
-### Client CI: Run via Docker (GHCR)
-```yaml
-    - name: Run doodlify via Docker
-      run: |
-        docker run --rm \
-          -e GITHUB_PERSONAL_ACCESS_TOKEN=${{ secrets.GITHUB_PERSONAL_ACCESS_TOKEN }} \
-          -e OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }} \
-          -e GITHUB_REPO_NAME=${{ github.repository }} \
-          -v ${{ github.workspace }}:/work \
-          -w /work \
-          ghcr.io/<org>/doodlify:latest \
-          doodlify run --config event.manifest.json
-```
-
-Notes:
-- Client repos should own `event.manifest.json` at the repo root. The tool reads it after clone to override `project/defaults/events`.
-- Lock files are written under `.doodlify-workspace/<repo>/` and should not be committed. Upload as artifacts if needed.
 
 ## 📊 State Management
 
@@ -456,10 +454,10 @@ doodlify process \
 ```
 
 Notes:
-- Backups: When a file is first transformed, Doodlify creates a `.original` sibling (e.g., `image.png.original`).
-- Default skip: Subsequent runs skip files with existing `.original` to avoid duplicate work.
-- Restore: `doodlify restore` puts the original bytes back into the current file and removes the `.original`, making it eligible for normal processing again.
-- Force: `--force` tells the processor to ignore `.original` and reprocess anyway.
+- Backups: When a file is first transformed, Doodlify creates a `.original.{ext}` sibling (e.g., `image.original.png`).
+- Default skip: Subsequent runs skip files with existing `.original.{ext}` to avoid duplicate work.
+- Restore: `doodlify restore` puts the original bytes back into the current file and removes the `.original.{ext}`, making it eligible for normal processing again.
+- Force: `--force` tells the processor to ignore `.original.{ext}` and reprocess anyway.
 
 ## 🧩 Optional Repo Manifest (event.manifest.json)
 
@@ -532,4 +530,4 @@ For issues and questions:
 
 ---
 
-Made with ❤️ by the [EliuX][mailto: eliecerhdz@gmail.com]
+Made with ❤️ by [EliuX][mailto: eliecerhdz@gmail.com]

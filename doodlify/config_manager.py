@@ -220,6 +220,34 @@ class ConfigManager:
         active_events = self.get_active_events()
         return [e for e in active_events if not e.progress.processed]
 
+    def align_lock_with_workspace(self, repo_name: Optional[str], workspace_dir: str = ".doodlify-workspace") -> None:
+        """Point lock_path to the workspace repo lock if it exists.
+
+        This ensures commands that don't instantiate the orchestrator (e.g., `status`)
+        still read the same lock file that `process`/`analyze` wrote under the cloned repo.
+
+        Args:
+            repo_name: "owner/repo" or just "repo". If None or invalid, no-op.
+            workspace_dir: Root directory where the repo was cloned.
+        """
+        try:
+            if not repo_name:
+                return
+            repo_basename = repo_name.split('/')[-1]
+            # Derive file name from current config (e.g., config.json -> config-lock.json)
+            stem = self.config_path.name
+            if stem.endswith(".json"):
+                base = stem[:-5]
+                derived = f"{base}-lock.json"
+            else:
+                derived = f"{stem}-lock.json"
+            candidate = Path(workspace_dir) / repo_basename / derived
+            if candidate.exists():
+                self.lock_path = candidate
+        except Exception:
+            # Non-fatal; fall back to existing lock_path
+            pass
+
     @property
     def config(self) -> Config:
         """Get current config."""

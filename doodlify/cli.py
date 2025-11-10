@@ -382,7 +382,12 @@ def status(config: str):
     """
     try:
         config_manager = ConfigManager(config_path=config)
+        # Load base config first
         config_manager.load_config()
+        # Align lock path to the workspace repo so we read the same lock that process/analyze wrote
+        repo_name = os.getenv('GITHUB_REPO_NAME')
+        config_manager.align_lock_with_workspace(repo_name)
+        # Now load the (possibly relocated) lock file
         lock = config_manager.load_lock()
 
         click.echo("=" * 60)
