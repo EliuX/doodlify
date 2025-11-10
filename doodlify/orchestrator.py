@@ -4,6 +4,7 @@ Main orchestrator for the Doodlify workflow.
 
 import os
 import json
+import tempfile
 import asyncio
 import hashlib
 from pathlib import Path
@@ -147,6 +148,42 @@ class Orchestrator:
             import traceback
             traceback.print_exc()
             return False
+
+    def _fingerprint(self, title: str, body: str) -> str:
+        """Create a stable fingerprint for a suggestion (used to dedupe)."""
+        data = (title.strip() + "\n" + body.strip()).encode("utf-8")
+        return hashlib.sha256(data).hexdigest()
+
+    def _report_suggestions(self, suggestions: List[dict]) -> None:
+        """Lightweight suggestion reporting.
+
+        This implementation intentionally does NOT call GitHub. It only records
+        unique suggestions into the lock file to avoid duplicates on future runs.
+        """
+        try:
+            lock = self.config_manager.lock
+            reported = lock.reported_suggestions or []
+            existing = {item.get("fingerprint") for item in reported}
+
+            new_entries = []
+            for s in suggestions or []:
+                title = (s.get("title") or "Improvement suggestion").strip()
+                body = (s.get("body") or "").strip()
+                fp = self._fingerprint(title, body)
+                if fp in existing:
+                    continue
+                new_entries.append({
+                    "title": title,
+                    "fingerprint": fp,
+                    "labels": s.get("labels") or [],
+                    "reported_at": datetime.utcnow().isoformat(),
+                })
+
+            if new_entries:
+                lock.reported_suggestions = reported + new_entries
+                self.config_manager.save_lock()
+        except Exception as e:
+            print(f"Warning: failed to record suggestions: {e}")
 
     def restore_files(self, event_id: str, files: List[str]) -> bool:
         """Restore selected files from their `.original` backups and reset their processed state.
@@ -337,12 +374,25 @@ class Orchestrator:
             else:
                 analysis = event.analysis or self.config_manager.lock.global_analysis
                 if not analysis:
+                    # Use excludes from prior lock's global analysis notes if provided
+                    try:
+                        prior_notes = (self.config_manager.lock.global_analysis.notes if self.config_manager.lock and self.config_manager.lock.global_analysis else {}) or {}
+                        excludes = list(prior_notes.get("excludes") or [])
+                    except Exception:
+                        excludes = []
                     analysis_result = self.analyzer_agent.analyze_codebase(
                         self.git_agent.repo_path,
                         config.project.sources,
                         config.defaults.selector,
-                        config.project.description
+                        config.project.description,
+                        excludes=excludes,
                     )
+                    # Persist excludes into notes for subsequent runs
+                    try:
+                        analysis_result.setdefault("notes", {})
+                        analysis_result["notes"]["excludes"] = excludes
+                    except Exception:
+                        pass
                     analysis = AnalysisResult(**analysis_result)
                     self.config_manager.update_event_analysis(event.id, analysis)
             
@@ -488,19 +538,42 @@ class Orchestrator:
                     backup_rel_path = self.git_agent.backup_file(rel_path)
                     print(f"  📦 Backed up: {rel_path}")
 
-                # Log which source is being used
-                if source_path == backup_full:
-                    print(f"    ↪ Using source: {str(source_path.relative_to(self.git_agent.repo_path))} (original backup)")
-                else:
-                    print(f"    ↪ Using source: {str(source_path.relative_to(self.git_agent.repo_path))} (working file)")
+                # If using a legacy backup (e.g., *.png.original), create a temp copy with correct suffix
+                temp_source: Path | None = None
+                try:
+                    # Log which source is being used
+                    if source_path == backup_full:
+                        print(f"    ↪ Using source: {str(source_path.relative_to(self.git_agent.repo_path))} (original backup)")
+                        src_suffix = source_path.suffix.lower()
+                        if src_suffix not in {'.png', '.jpg', '.jpeg', '.webp'}:
+                            # Derive correct extension from working file
+                            correct_ext = full_path.suffix or '.png'
+                            fd, tmp_path = tempfile.mkstemp(suffix=correct_ext)
+                            os.close(fd)
+                            temp_source = Path(tmp_path)
+                            # Write bytes from backup to temp so mimetype is correct
+                            temp_source.write_bytes(source_path.read_bytes())
+                            source_for_api = temp_source
+                        else:
+                            source_for_api = source_path
+                    else:
+                        print(f"    ↪ Using source: {str(source_path.relative_to(self.git_agent.repo_path))} (working file)")
+                        source_for_api = source_path
 
-                # Run image transformation using chosen source; write to working file
-                output_bytes = self.image_agent.transform_image(
-                    source_path,
-                    event.name,
-                    event.description,
-                    output_path=full_path
-                )
+                    # Run image transformation using chosen source; write to working file
+                    output_bytes = self.image_agent.transform_image(
+                        source_for_api,
+                        event.name,
+                        event.description,
+                        output_path=full_path
+                    )
+                finally:
+                    # Cleanup temp if created
+                    if temp_source and temp_source.exists():
+                        try:
+                            temp_source.unlink()
+                        except Exception:
+                            pass
 
                 # If the agent returned bytes and didn't already write
                 if output_bytes and not full_path.read_bytes() == output_bytes:

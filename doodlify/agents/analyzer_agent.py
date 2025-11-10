@@ -6,6 +6,7 @@ import re
 import json
 import logging
 import os
+import subprocess
 from pathlib import Path
 from typing import List, Dict, Set, Optional
 from openai import OpenAI
@@ -27,7 +28,8 @@ class AnalyzerAgent:
         repo_path: Path,
         sources: List[str],
         selector: Optional[str] = None,
-        project_description: str = ""
+        project_description: str = "",
+        excludes: Optional[List[str]] = None,
     ) -> Dict[str, any]:
         """
         Analyze codebase to identify files and elements for decoration.
@@ -44,6 +46,8 @@ class AnalyzerAgent:
         print("🔍 Analyzing codebase...")
         logger.info(f"Starting codebase analysis for repository: {repo_path}")
         logger.info(f"Source directories to scan: {sources if sources else ['entire repository']}")
+        if excludes:
+            logger.info(f"Excludes: {excludes}")
         
         # Find all relevant files
         frontend_files = self._find_frontend_files(repo_path, sources)
@@ -122,6 +126,11 @@ class AnalyzerAgent:
         norm_texts = self._normalize_paths(repo_path, sources, text_files)
         norm_selectors = self._normalize_paths(repo_path, sources, selector_matches if selector_matches else [])
 
+        # Apply final filtering: drop build/dist and custom excludes, and gitignored
+        norm_images = self._final_filter(repo_path, norm_images, excludes)
+        norm_texts = self._final_filter(repo_path, norm_texts, excludes)
+        norm_selectors = self._final_filter(repo_path, norm_selectors, excludes)
+
         return {
             "files_of_interest": norm_selectors if selector_matches else (norm_images + norm_texts),
             "image_files": norm_images,
@@ -130,6 +139,43 @@ class AnalyzerAgent:
             "notes": ai_analysis,
             "improvement_suggestions": suggestions,
         }
+
+    def _final_filter(self, repo_path: Path, items: List[str], excludes: Optional[List[str]]) -> List[str]:
+        """Filter normalized repo-relative paths using hardcoded build dirs, gitignore, and custom excludes.
+        """
+        if not items:
+            return items
+        excluded_substrings = [f"{os.sep}node_modules{os.sep}", f"{os.sep}dist{os.sep}", f"{os.sep}build{os.sep}", f"{os.sep}.next{os.sep}", f"{os.sep}out{os.sep}", f"{os.sep}.git{os.sep}"]
+        excludes = excludes or []
+        out: List[str] = []
+        for rel in items:
+            try:
+                s = str(rel)
+                if any(pat in s for pat in excluded_substrings):
+                    continue
+                # custom excludes simple contains or prefix match
+                if any(x and (s.startswith(x.rstrip('/') + '/') or x in s) for x in excludes):
+                    continue
+                full = (repo_path / rel)
+                # respect gitignore
+                try:
+                    if (repo_path / ".git").exists():
+                        res = subprocess.run(["git", "-C", str(repo_path), "check-ignore", "-q", str(full)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        if res.returncode == 0:
+                            continue
+                except Exception:
+                    pass
+                out.append(rel)
+            except Exception:
+                out.append(rel)
+        # de-dupe, preserve order
+        seen = set()
+        ret: List[str] = []
+        for r in out:
+            if r not in seen:
+                seen.add(r)
+                ret.append(r)
+        return ret
     
     def _find_frontend_files(self, repo_path: Path, sources: List[str]) -> List[Path]:
         """Find all frontend-related files in specified sources."""
@@ -149,20 +195,65 @@ class AnalyzerAgent:
                 continue
             
             logger.info(f"Scanning directory: {search_path}")
-            path_files = []
-            for ext in frontend_extensions:
-                ext_files = list(search_path.rglob(f"*{ext}"))
-                path_files.extend(ext_files)
-            
+            path_files: List[Path] = []
+            # Prefer git-tracked files to respect .gitignore
+            git_dir = repo_path / ".git"
+            if git_dir.exists():
+                try:
+                    res = subprocess.run(
+                        ["git", "-C", str(repo_path), "ls-files"],
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                    )
+                    tracked = [repo_path / p.strip() for p in res.stdout.splitlines() if p.strip()]
+                    # Filter to current search_path scope and extensions
+                    for p in tracked:
+                        try:
+                            if not p.is_file():
+                                continue
+                            if not str(p).startswith(str(search_path)):
+                                continue
+                            if p.suffix in frontend_extensions:
+                                path_files.append(p)
+                        except Exception:
+                            continue
+                except Exception:
+                    # Fallback to rglob
+                    for ext in frontend_extensions:
+                        path_files.extend(list(search_path.rglob(f"*{ext}")))
+            else:
+                for ext in frontend_extensions:
+                    path_files.extend(list(search_path.rglob(f"*{ext}")))
+
             logger.info(f"Found {len(path_files)} frontend files in {search_path}")
             files.extend(path_files)
         
-        # Filter out node_modules, build, dist, etc.
-        exclude_patterns = ['node_modules', 'dist', 'build', '.next', 'out', 'coverage', '.git']
-        filtered_files = [
-            f for f in files
-            if not any(pattern in str(f) for pattern in exclude_patterns)
-        ]
+        # Filter out node_modules, build, dist, etc., and respect .gitignore via git check-ignore
+        exclude_patterns = ['node_modules', os.sep+'dist'+os.sep, os.sep+'build'+os.sep, os.sep+'.next'+os.sep, os.sep+'out'+os.sep, os.sep+'coverage'+os.sep, os.sep+'.git'+os.sep]
+
+        def _is_git_ignored(path: Path) -> bool:
+            try:
+                if not (repo_path / ".git").exists():
+                    return False
+                res = subprocess.run(
+                    ["git", "-C", str(repo_path), "check-ignore", "-q", str(path)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return res.returncode == 0
+            except Exception:
+                return False
+
+        filtered_files = []
+        for f in files:
+            s = str(f)
+            if any(pat in s for pat in exclude_patterns):
+                continue
+            if _is_git_ignored(f):
+                continue
+            filtered_files.append(f)
         
         return filtered_files
     
@@ -667,9 +758,23 @@ class AnalyzerAgent:
             candidates.append(repo_path / s_norm / normalized)
         # 3) Heuristic UI root
         candidates.append(repo_path / 'web-ui' / 'src' / normalized)
+        # Helper: skip build/dist and gitignored paths
+        def _skip(p: Path) -> bool:
+            s = str(p)
+            if any(seg in s for seg in [os.sep+'node_modules'+os.sep, os.sep+'dist'+os.sep, os.sep+'build'+os.sep, os.sep+'.next'+os.sep, os.sep+'out'+os.sep, os.sep+'.git'+os.sep]):
+                return True
+            try:
+                if (repo_path / ".git").exists():
+                    res = subprocess.run(["git", "-C", str(repo_path), "check-ignore", "-q", str(p)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if res.returncode == 0:
+                        return True
+            except Exception:
+                pass
+            return False
+
         for c in candidates:
             try:
-                if c.exists():
+                if c.exists() and not _skip(c):
                     return c
             except Exception:
                 continue

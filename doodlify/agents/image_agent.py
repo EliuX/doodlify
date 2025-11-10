@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 from openai import OpenAI
 from PIL import Image
+import io
 
 
 class ImageAgent:
@@ -18,18 +19,15 @@ class ImageAgent:
     def generate_prompt(self, event_name: str, event_description: str, image_context: str = "") -> str:
         """Generate a prompt for image transformation based on event."""
         base_prompt = f"""
-        Generate a new flat 2D illustration version of the image that adapts it for {event_name}.
+        Generate a new version of the image that adapts it for {event_name}.
         {event_description}
 
         Instructions:
-        - Maintain the core composition and subject matter of the original image
-        - Add thematic elements related to {event_name}
-        - Keep the style consistent with the original
-        - Use colors and visual elements that evoke the theme
         - Ensure the result is professional and high-quality
-        - PRESERVE any existing transparency (alpha channel) exactly as in the original
-        - Do NOT introduce a checkerboard or solid fill where transparency exists
-        - Do NOT flatten the image; keep transparent pixels transparent
+        - Maintain the style, core composition and subject matter of the original image
+        - Add thematic elements related to {event_name} or replace the existing ones
+        - Use colors and visual elements that evoke the theme
+        - The background without content is transparent.
         """
 
         if image_context:
@@ -64,23 +62,21 @@ class ImageAgent:
         prompt = self.generate_prompt(
             event_name, event_description, image_context)
 
-        # Determine original dimensions to preserve exact size during generation
-        with Image.open(image_path) as _im:
-            width, height = _im.size
-        size_str = f"{width}x{height}"
-
-        # Call OpenAI image edit API with explicit size
+        # Call OpenAI image edit API (leave size as default 'auto')
         with open(image_path, 'rb') as f:
             result = self.client.images.edit(
                 model="gpt-image-1",
                 image=f,
                 prompt=prompt,
-                size=size_str,
+                background="auto"
             )
 
         # Get base64 encoded image
         image_base64 = result.data[0].b64_json
         image_bytes = base64.b64decode(image_base64)
+
+        # Harmonize output size with original if needed (and possible)
+        image_bytes = self._harmonize_output_size(image_path, image_bytes)
 
         # Save to output path if provided
         if output_path:
@@ -89,6 +85,55 @@ class ImageAgent:
                 f.write(image_bytes)
 
         return image_bytes
+
+    def _harmonize_output_size(self, source_path: Path, image_bytes: bytes) -> bytes:
+        """Ensure the output image matches the original size when possible.
+
+        - If sizes match: return bytes unchanged.
+        - If sizes differ but aspect ratio matches (within a small tolerance), resize to the
+          original canvas using high-quality resampling, preserving transparency.
+        - Otherwise: log a warning and return bytes unchanged.
+        """
+        try:
+            with Image.open(source_path) as _orig:
+                o_w, o_h = _orig.size
+                orig_has_alpha = 'A' in _orig.getbands()
+            with Image.open(io.BytesIO(image_bytes)) as _out:
+                n_w, n_h = _out.size
+                # Fast path: identical
+                if (n_w, n_h) == (o_w, o_h):
+                    return image_bytes
+
+                # Check aspect ratio closeness
+                def _ratio(w, h):
+                    return float(w) / float(h) if h else 0.0
+
+                r_orig = _ratio(o_w, o_h)
+                r_new = _ratio(n_w, n_h)
+                if abs(r_orig - r_new) <= 1e-3:
+                    # Resize to exact original canvas
+                    result_img = _out.convert("RGBA")
+                    resized = result_img.resize((o_w, o_h), Image.LANCZOS)
+                    # Ensure transparency is preserved when present
+                    if not orig_has_alpha and 'A' not in resized.getbands():
+                        # No alpha to enforce; keep as is
+                        pass
+                    # Serialize as PNG (to keep alpha)
+                    buf = io.BytesIO()
+                    resized.save(buf, format='PNG')
+                    fixed_bytes = buf.getvalue()
+                    print(
+                        f"ℹ️  ImageAgent: resized output from {n_w}x{n_h} to match original {o_w}x{o_h} for {source_path.name}"
+                    )
+                    return fixed_bytes
+                else:
+                    print(
+                        f"⚠️  ImageAgent: output size {n_w}x{n_h} aspect ratio differs from original {o_w}x{o_h} for {source_path.name}"
+                    )
+                    return image_bytes
+        except Exception:
+            # If any step fails, return original bytes
+            return image_bytes
 
     def is_supported_format(self, file_path: Path) -> bool:
         """Check if image format is supported."""

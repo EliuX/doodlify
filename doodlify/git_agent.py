@@ -298,15 +298,13 @@ class GitAgent:
         return file_path.with_suffix(file_path.suffix + '.original')
     
     def resolve_existing_backup(self, file_path: Path) -> Optional[Path]:
-        """Return an existing backup path if found (prefer new scheme).
-        Checks both new and legacy naming to stay compatible with prior runs.
+        """Return an existing backup path only if it matches the new scheme.
+        New scheme: <name>.original.<ext>
+        Legacy backups (<name>.<ext>.original) are intentionally ignored.
         """
         new_path = self.get_backup_path(file_path)
         if new_path.exists():
             return new_path
-        legacy_path = self.get_legacy_backup_path(file_path)
-        if legacy_path.exists():
-            return legacy_path
         return None
 
     def cleanup(self) -> None:
