@@ -1102,7 +1102,8 @@ This automated customization includes:
                     new_txt = txt
                     for name, backup in pairs:
                         # Match <img ... src="...name..."> without an onerror already on the same tag
-                        pattern = re.compile(rf"(<img[^>]*?src=(?:'|\")([^'\"]*{re.escape(name)})['\"][^>]*)(>)", re.IGNORECASE)
+                        # Capture optional self-closing slash with the closing bracket
+                        pattern = re.compile(rf"(<img[^>]*?src=(?:'|\")([^'\"]*{re.escape(name)})['\"][^>]*?)(\s*/?>)", re.IGNORECASE)
                         def _inject(m):
                             tag_start = m.group(1)
                             closing = m.group(3)
