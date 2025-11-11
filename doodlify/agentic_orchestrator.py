@@ -82,7 +82,7 @@ class AgenticOrchestrator:
         # Create chat generator with tool support
         self.chat_generator = OpenAIChatGenerator(
             api_key=Secret.from_token(self.openai_api_key),
-            model="gpt-4o",
+            model="gpt-5",
             generation_kwargs={"temperature": 0.3},
             tools=self.toolset
         )
@@ -188,7 +188,8 @@ Use the analyze_codebase tool to perform a comprehensive project analysis."""
         self,
         event_id: Optional[str] = None,
         only: Optional[List[str]] = None,
-        force: bool = False
+        force: bool = False,
+        styles_only: bool = False
     ) -> bool:
         """
         Process phase: Let the agent autonomously handle event processing.
@@ -197,6 +198,7 @@ Use the analyze_codebase tool to perform a comprehensive project analysis."""
             event_id: Specific event ID to process
             only: List of specific files to process
             force: Force reprocess even if backups exist
+            styles_only: Process only CSS/SCSS/SASS/LESS files (skip images and text)
         
         Returns:
             True if successful
@@ -222,8 +224,11 @@ Use the analyze_codebase tool to perform a comprehensive project analysis."""
             
             print(f"Processing {len(events_to_process)} event(s)...\n")
             
+            if styles_only:
+                print("🎨 Styles-only mode: Processing CSS/SCSS/SASS/LESS files only\n")
+            
             for event in events_to_process:
-                success = self._process_event_agentic(event, only=only, force=force)
+                success = self._process_event_agentic(event, only=only, force=force, styles_only=styles_only)
                 if not success:
                     print(f"✗ Failed to process event: {event.name}")
                     return False
@@ -241,7 +246,8 @@ Use the analyze_codebase tool to perform a comprehensive project analysis."""
         self,
         event: EventLock,
         only: Optional[List[str]] = None,
-        force: bool = False
+        force: bool = False,
+        styles_only: bool = False
     ) -> bool:
         """
         Process a single event using agentic approach.
@@ -251,6 +257,9 @@ Use the analyze_codebase tool to perform a comprehensive project analysis."""
         - In what order to process them
         - How to handle errors and retries
         - When to commit changes
+        
+        Args:
+            styles_only: Process only CSS/SCSS/SASS/LESS files (skip images and text)
         """
         print(f"\n{'=' * 60}")
         print(f"🎨 Processing: {event.name} (Agent-driven)")

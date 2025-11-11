@@ -348,7 +348,7 @@ class Orchestrator:
             traceback.print_exc()
             return False
 
-    def process(self, event_id: Optional[str] = None, only: Optional[List[str]] = None, force: bool = False) -> bool:
+    def process(self, event_id: Optional[str] = None, only: Optional[List[str]] = None, force: bool = False, styles_only: bool = False) -> bool:
         """
         Process phase: Process all active unprocessed events.
         
@@ -356,6 +356,7 @@ class Orchestrator:
             event_id: Specific event ID to process
             only: List of specific files to process
             force: Force reprocess even if backups exist
+            styles_only: Process only CSS/SCSS/SASS/LESS files (skip images and text)
         
         Returns:
             True if processing successful, False otherwise
@@ -398,8 +399,11 @@ class Orchestrator:
             
             print(f"Processing {len(events_to_process)} event(s)...\n")
             
+            if styles_only:
+                print("🎨 Styles-only mode: Processing CSS/SCSS/SASS/LESS files only\n")
+            
             for event in events_to_process:
-                success = self._process_event(event, only=only, force=force)
+                success = self._process_event(event, only=only, force=force, styles_only=styles_only)
                 if not success:
                     print(f"✗ Failed to process event: {event.name}")
                     return False
@@ -413,13 +417,14 @@ class Orchestrator:
             traceback.print_exc()
             return False
     
-    def _process_event(self, event: EventLock, only: Optional[List[str]] = None, force: bool = False) -> bool:
+    def _process_event(self, event: EventLock, only: Optional[List[str]] = None, force: bool = False, styles_only: bool = False) -> bool:
         """Process a single event.
         
         Args:
             event: Event to process
             only: List of specific files to process
             force: Force reprocess even if backups exist
+            styles_only: Process only CSS/SCSS/SASS/LESS files (skip images and text)
         """
         print(f"\n{'=' * 60}")
         print(f"🎨 Processing: {event.name}")
@@ -512,24 +517,30 @@ class Orchestrator:
             if only:
                 only_set = set([str(Path(p).as_posix()).lstrip('/') for p in only])
 
-            # Process image files (respect --only before logging)
-            image_candidates = list(analysis.image_files or [])
-            if only_set is not None:
-                image_candidates = [p for p in image_candidates if (p in only_set or Path(p).name in only_set)]
-            
-            if image_candidates:
-                print(f"\n🖼️  Processing {len(image_candidates)} image(s)...")
-                image_files = self._process_images(event, image_candidates, only=only_set, force=force, palette=selected_palette)
-                modified_files.extend(image_files)
+            # Process image files (skip if styles-only mode)
+            if not styles_only:
+                image_candidates = list(analysis.image_files or [])
+                if only_set is not None:
+                    image_candidates = [p for p in image_candidates if (p in only_set or Path(p).name in only_set)]
+                
+                if image_candidates:
+                    print(f"\n🖼️  Processing {len(image_candidates)} image(s)...")
+                    image_files = self._process_images(event, image_candidates, only=only_set, force=force, palette=selected_palette)
+                    modified_files.extend(image_files)
+            else:
+                print(f"\n🖼️  Skipping {len(analysis.image_files or [])} image(s) (styles-only mode)")
 
-            # Process text files (respect --only before logging)
-            text_candidates = list(analysis.text_files or [])
-            if only_set is not None:
-                text_candidates = [p for p in text_candidates if (p in only_set or Path(p).name in only_set)]
-            if text_candidates:
-                print(f"\n📝 Processing {len(text_candidates)} text file(s)...")
-                text_files = self._process_texts(event, text_candidates, only=only_set, force=force)
-                modified_files.extend(text_files)
+            # Process text files (skip if styles-only mode)
+            if not styles_only:
+                text_candidates = list(analysis.text_files or [])
+                if only_set is not None:
+                    text_candidates = [p for p in text_candidates if (p in only_set or Path(p).name in only_set)]
+                if text_candidates:
+                    print(f"\n📝 Processing {len(text_candidates)} text file(s)...")
+                    text_files = self._process_texts(event, text_candidates, only=only_set, force=force)
+                    modified_files.extend(text_files)
+            else:
+                print(f"\n📝 Skipping {len(analysis.text_files or [])} text file(s) (styles-only mode)")
             
             if not modified_files:
                 print("⚠️  No files were modified")
@@ -1169,44 +1180,70 @@ This automated customization includes:
                 if len(content.strip()) < 50:
                     continue
                 
+                # Detect file format
+                file_ext = file_path.suffix.lower()
+                format_examples = {
+                    '.scss': '$variable-name: #hexcolor;',
+                    '.sass': '$variable-name: #hexcolor',
+                    '.less': '@variable-name: #hexcolor;',
+                    '.css': '--variable-name: #hexcolor;'
+                }
+                syntax_example = format_examples.get(file_ext, '--variable-name: #hexcolor;')
+                
                 # Ask AI to identify color variables and suggest replacements
                 prompt = f"""You are analyzing a stylesheet for an event-themed website transformation.
 
 Event: {event.name}
 Event Description: {event.description}
-Color Palette: {', '.join(palette)}
+Color Palette (in order of importance): {', '.join(palette)}
 
-Stylesheet file: {rel}
+File: {rel}
+Format: {file_ext.upper()[1:]} (syntax: {syntax_example})
+
 Content (first 2000 chars):
-```
+```{file_ext[1:]}
 {content[:2000]}
 ```
 
-Identify ALL color-related variables, properties, and values that should be changed to match the event theme.
-Consider:
-- CSS custom properties (--color-name, --primary, --accent, etc.)
-- SCSS/SASS variables ($color-name, $primary, $brand-color, etc.)
-- LESS variables (@color-name, @primary, @theme-color, etc.)
-- Direct color values in properties (background-color, color, border-color, etc.)
+CRITICAL INSTRUCTIONS:
+1. **ONLY modify existing variable assignments**: Find lines that already assign values to variables. DO NOT create new variables.
+2. **Look for these patterns to REPLACE**:
+3. **NEVER create invalid syntax**: 
+   - NEVER write `#FFFFFF: $variable;` (hex codes cannot be variable names)
+   - NEVER add new variables that don't exist
+   - ONLY change the VALUE part after the colon
+4. **Semantic mapping**: Map palette colors to semantically appropriate existing variables:
+   - {palette[0]} (Christmas red) → primary/brand colors
+   - {palette[1] if len(palette) > 1 else 'N/A'} (Christmas green) → secondary/accent colors
+5. **Preserve exact formatting**: Keep all whitespace, semicolons, commas exactly as found
 
-For each identified item, provide:
-1. The exact pattern to search for (use regex if needed)
-2. The replacement value from the palette
-3. Brief reason why this should change
+VALID patterns to look for and replace:
+- `$variable-name: #color;` (SCSS variable assignment)
+- `$variable-name: $other-var;` (SCSS variable reference)
+-  "variable-name":  $oldcolor, (SCSS variable reference)
+- `"key": $variable,` (theme map entry)
+- `--property: #color;` (CSS custom property)
+
 
 Respond in JSON format:
 {{
   "changes": [
     {{
-      "pattern": "regex or literal string to find",
-      "replacement": "new color value from palette",
-      "reason": "brief explanation",
-      "is_regex": true/false
+      "pattern": "exact string to find (e.g., '$primary: #0d6efd;')",
+      "replacement": "exact replacement string (e.g., '$primary: {palette[0]};')",
+      "reason": "brief semantic explanation (e.g., 'Map primary brand color to Christmas red')",
+      "is_regex": false
     }}
   ]
 }}
 
-If no changes are needed, return {{"changes": []}}.
+IMPORTANT: 
+- Use is_regex: false for simple literal replacements
+- Only use is_regex: true if you need to match variations (e.g., different whitespace)
+- Ensure all replacements produce VALID {file_ext.upper()[1:]} syntax
+- If unsure, return {{"changes": []}}
+
+If no color variables are found or changes aren't needed, return {{"changes": []}}.
 """
                 
                 response = client.chat.completions.create(
@@ -1225,11 +1262,47 @@ If no changes are needed, return {{"changes": []}}.
                 if not changes:
                     continue
                 
-                print(f"  🔍 {rel}: Found {len(changes)} color change(s)")
+                # Validate changes - reject any invalid syntax
+                valid_changes = []
+                for change in changes:
+                    pattern = change.get('pattern', '')
+                    replacement = change.get('replacement', '')
+                    
+                    # Check for forbidden patterns in both pattern and replacement
+                    invalid_pattern = False
+                    
+                    # Check if pattern starts with hex code (invalid variable name)
+                    if pattern.startswith('#') and len(pattern) >= 7:
+                        print(f"  ⚠️  Skipping invalid pattern (hex as variable): {pattern}")
+                        invalid_pattern = True
+                    
+                    # Check if replacement contains invalid syntax
+                    if (replacement.startswith('#') and ':' in replacement) or \
+                       (': $' in replacement and replacement.startswith('#')) or \
+                       (replacement.count(':') > 1):  # Multiple colons suggest invalid syntax
+                        print(f"  ⚠️  Skipping invalid syntax: {replacement}")
+                        invalid_pattern = True
+                    
+                    # Check for regex patterns that might be malformed
+                    if change.get('is_regex', False):
+                        try:
+                            re.compile(pattern)
+                        except re.error as e:
+                            print(f"  ⚠️  Skipping invalid regex pattern: {pattern} ({e})")
+                            invalid_pattern = True
+                    
+                    if not invalid_pattern:
+                        valid_changes.append(change)
+                
+                if not valid_changes:
+                    print(f"  ⚠️  {rel}: All suggested changes were invalid syntax - skipping file")
+                    continue
+                
+                print(f"  🔍 {rel}: Found {len(valid_changes)} valid color change(s)")
                 
                 # Apply changes
                 new_content = content
-                for change in changes:
+                for change in valid_changes:
                     pattern = change.get('pattern', '')
                     replacement = change.get('replacement', '')
                     is_regex = change.get('is_regex', False)
@@ -1250,10 +1323,30 @@ If no changes are needed, return {{"changes": []}}.
                 
                 # Write changes if modified
                 if new_content != content:
+                    # Final cleanup: remove any lines that start with hex codes (invalid syntax)
+                    lines = new_content.split('\n')
+                    cleaned_lines = []
+                    removed_invalid = False
+                    
+                    for line in lines:
+                        stripped = line.strip()
+                        # Remove lines that start with hex codes (invalid variable names)
+                        if stripped.startswith('#') and len(stripped) >= 7 and ':' in stripped:
+                            print(f"    🧹 Removing invalid line: {stripped}")
+                            removed_invalid = True
+                        else:
+                            cleaned_lines.append(line)
+                    
+                    final_content = '\n'.join(cleaned_lines)
+                    
                     backup_rel = self.git_agent.backup_file(rel)
-                    file_path.write_text(new_content, encoding='utf-8')
+                    file_path.write_text(final_content, encoding='utf-8')
                     modified.extend([rel, backup_rel])
-                    print(f"    💾 Saved changes to {rel}")
+                    
+                    if removed_invalid:
+                        print(f"    💾 Saved changes to {rel} (with invalid syntax cleanup)")
+                    else:
+                        print(f"    💾 Saved changes to {rel}")
                 
             except Exception as e:
                 print(f"  ✗ Failed to process {rel}: {e}")

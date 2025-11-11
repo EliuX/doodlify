@@ -200,7 +200,13 @@ def restore(config: str, event_id: str, files: str):
     default=False,
     help='Use agentic mode (Haystack + MCP) instead of classic assistant mode'
 )
-def process(config: str, event_id: Optional[str], only: Optional[str], force: bool, agentic: bool):
+@click.option(
+    '--styles-only',
+    is_flag=True,
+    default=False,
+    help='Process only CSS/SCSS/SASS/LESS files (skip images and text files)'
+)
+def process(config: str, event_id: Optional[str], only: Optional[str], force: bool, agentic: bool, styles_only: bool):
     """
     Process all active unprocessed events.
 
@@ -216,7 +222,7 @@ def process(config: str, event_id: Optional[str], only: Optional[str], force: bo
         only_list = None
         if only:
             only_list = [p.strip() for p in only.split(',') if p.strip()]
-        success = orchestrator.process(event_id=event_id, only=only_list, force=force)
+        success = orchestrator.process(event_id=event_id, only=only_list, force=force, styles_only=styles_only)
 
         if success:
             click.echo("\n✅ Processing completed successfully!")
