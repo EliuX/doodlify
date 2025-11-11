@@ -118,7 +118,6 @@ class ConfigManager:
             EventLock(
                 **event.model_dump(),
                 progress=EventProgress(status="pending"),
-                analysis=None,
                 last_executed=None,
             )
             for event in self._config.events
