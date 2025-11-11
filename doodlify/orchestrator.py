@@ -1182,74 +1182,110 @@ This automated customization includes:
                 
                 # Detect file format
                 file_ext = file_path.suffix.lower()
-                format_examples = {
-                    '.scss': '$variable-name: #hexcolor;',
-                    '.sass': '$variable-name: #hexcolor',
-                    '.less': '@variable-name: #hexcolor;',
-                    '.css': '--variable-name: #hexcolor;'
-                }
-                syntax_example = format_examples.get(file_ext, '--variable-name: #hexcolor;')
                 
-                # Ask AI to identify color variables and suggest replacements
-                prompt = f"""You are analyzing a stylesheet for an event-themed website transformation.
+                # Ask AI to understand context and suggest semantic replacements
+                prompt = f"""You are a stylesheet expert analyzing a file for event-themed color transformation.
+
+## TECHNOLOGY CONTEXT
+
+File Type: {file_ext.upper()[1:]}
+Technology: {'SCSS (Sassy CSS) - uses $variables and compiles to CSS' if file_ext == '.scss' else 
+             'SASS - uses $variables without braces' if file_ext == '.sass' else
+             'LESS - uses @variables' if file_ext == '.less' else
+             'CSS - uses --custom-properties'}
+
+## SYNTAX RULES FOR {file_ext.upper()[1:]}
+
+{'''SCSS Variable Assignment: $variable-name: value;
+SCSS Theme Maps: ("key": value,)
+Variable References: Use existing $variable-names, not literal colors
+Example VALID: "primary": $teal-200,
+Example INVALID: #FFFFFF: $black; (hex codes are NOT valid variable names)''' if file_ext == '.scss' else
+'''CSS Custom Properties: --property-name: value;
+Example: --primary-color: #ff0000;''' if file_ext == '.css' else
+'''LESS Variables: @variable-name: value;
+Example: @primary: #ff0000;'''}
+
+Analyze this file and suggest color replacements for the event theme.
 
 Event: {event.name}
-Event Description: {event.description}
-Color Palette (in order of importance): {', '.join(palette)}
+Description: {event.description}
+Target Palette: {', '.join(f'{i+1}. {c}' for i, c in enumerate(palette))}
 
-File: {rel}
-Format: {file_ext.upper()[1:]} (syntax: {syntax_example})
+## FILE CONTENT
 
-Content (first 2000 chars):
 ```{file_ext[1:]}
 {content[:2000]}
 ```
 
-CRITICAL INSTRUCTIONS:
-1. **ONLY modify existing variable assignments**: Find lines that already assign values to variables. DO NOT create new variables.
-2. **Look for these patterns to REPLACE**:
-3. **NEVER create invalid syntax**: 
-   - NEVER write `#FFFFFF: $variable;` (hex codes cannot be variable names)
-   - NEVER add new variables that don't exist
-   - ONLY change the VALUE part after the colon
-4. **Semantic mapping**: Map palette colors to semantically appropriate existing variables:
-   - {palette[0]} (Christmas red) → primary/brand colors
-   - {palette[1] if len(palette) > 1 else 'N/A'} (Christmas green) → secondary/accent colors
-5. **Preserve exact formatting**: Keep all whitespace, semicolons, commas exactly as found
+## ANALYSIS STEPS
 
-VALID patterns to look for and replace:
-- `$variable-name: #color;` (SCSS variable assignment)
-- `$variable-name: $other-var;` (SCSS variable reference)
--  "variable-name":  $oldcolor, (SCSS variable reference)
-- `"key": $variable,` (theme map entry)
-- `--property: #color;` (CSS custom property)
+1. **Identify Existing Color Variables**: Find all variables that define or reference colors
+2. **Understand Semantic Meaning**: Determine what each variable represents (primary, secondary, accent, etc.)
+3. **Map Palette to Semantics**: Match event colors to appropriate semantic variables
+4. **Generate Exact Replacements**: Provide literal string find/replace that preserves syntax
 
+## OUTPUT FORMAT
 
-Respond in JSON format:
+Return JSON with your analysis and changes:
 {{
+  "analysis": {{
+    "file_type": "{file_ext[1:].upper()}",
+    "primary_color_variables": ["list of variables that represent primary/brand colors"],
+    "secondary_color_variables": ["list of variables that represent secondary/accent colors"],
+    "other_color_variables": ["other color-related variables found"]
+  }},
   "changes": [
     {{
-      "pattern": "exact string to find (e.g., '$primary: #0d6efd;')",
-      "replacement": "exact replacement string (e.g., '$primary: {palette[0]};')",
-      "reason": "brief semantic explanation (e.g., 'Map primary brand color to Christmas red')",
+      "pattern": "EXACT string to find (copy from file exactly, including whitespace)",
+      "replacement": "EXACT replacement (maintain format, only change color value)",
+      "reason": "Semantic explanation (e.g., 'Map primary to {palette[0]} - Christmas red')",
       "is_regex": false
     }}
   ]
 }}
 
-IMPORTANT: 
-- Use is_regex: false for simple literal replacements
-- Only use is_regex: true if you need to match variations (e.g., different whitespace)
-- Ensure all replacements produce VALID {file_ext.upper()[1:]} syntax
-- If unsure, return {{"changes": []}}
+## CRITICAL RULES
 
-If no color variables are found or changes aren't needed, return {{"changes": []}}.
+1. **ONLY modify VALUES in existing variable assignments** - never create new variables
+2. **Preserve exact syntax** - if you see `"primary": $teal-200,` keep the format, just change `$teal-200` to the new color
+3. **Use literal replacements** (is_regex: false) - copy the exact text including whitespace
+4. **NEVER start a line with #HEXCODE:** - that's invalid syntax in all stylesheet languages
+5. **If no valid changes possible** - return {{"analysis": {{}}, "changes": []}}
+
+## EXAMPLES
+
+For SCSS theme map:
+```scss
+"primary": $teal-200,
+```
+VALID change: pattern='"primary":    $teal-200,', replacement='"primary":    {palette[0]},'
+INVALID: pattern='#C1121F:', replacement=... (NO! hex codes can't be variable names)
+
+For SCSS variable:
+```scss
+$body-bg: #ffffff;
+```
+VALID: pattern='$body-bg: #ffffff;', replacement='$body-bg: {palette[0]};'
+
+Respond with valid JSON only.
 """
                 
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": "You are a helpful assistant that analyzes stylesheets and suggests color changes for event themes. Always respond with valid JSON."},
+                        {"role": "system", "content": """You are an expert in web stylesheet technologies (SCSS, SASS, LESS, CSS).
+Your role is to:
+1. Analyze stylesheet files to understand their color variable structure
+2. Identify the semantic meaning of color variables (primary, secondary, accent, etc.)
+3. Suggest precise find-and-replace operations that map event theme colors to semantically appropriate variables
+4. Ensure all suggestions maintain valid syntax for the target stylesheet language
+
+You MUST understand the difference between:
+- Variable NAMES (e.g., $primary, --main-color) which should never be changed
+- Variable VALUES (e.g., #ff0000, $teal-200) which you are changing to match the theme
+
+Always respond with valid JSON including your analysis and changes."""},
                         {"role": "user", "content": prompt}
                     ],
                     response_format={"type": "json_object"}
@@ -1257,6 +1293,16 @@ If no color variables are found or changes aren't needed, return {{"changes": []
                 )
                 
                 result = json.loads(response.choices[0].message.content)
+                
+                # Log AI's analysis of the file
+                analysis_data = result.get('analysis', {})
+                if analysis_data:
+                    print(f"  📊 Analysis: {analysis_data.get('file_type', 'Unknown')} file")
+                    if analysis_data.get('primary_color_variables'):
+                        print(f"     Primary colors: {', '.join(analysis_data['primary_color_variables'][:3])}")
+                    if analysis_data.get('secondary_color_variables'):
+                        print(f"     Secondary colors: {', '.join(analysis_data['secondary_color_variables'][:3])}")
+                
                 changes = result.get('changes', [])
                 
                 if not changes:
