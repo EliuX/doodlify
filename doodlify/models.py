@@ -117,7 +117,6 @@ class EventProgress(BaseModel):
 class EventLock(EventConfig):
     """Extended event configuration with lock data."""
     progress: EventProgress = Field(default_factory=lambda: EventProgress(status="pending"))
-    analysis: Optional[AnalysisResult] = Field(None, description="Analysis results for this event")
     last_executed: Optional[str] = Field(None, description="Last execution timestamp")
 
 

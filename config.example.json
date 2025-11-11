@@ -11,27 +11,27 @@
   },
   "events": [
     {
-      "id": "halloween-2024",
-      "name": "Halloween 2024",
+      "id": "halloween-2025",
+      "name": "Halloween 2025",
       "description": "Transform the website with spooky Halloween theme. Add pumpkins, ghosts, and autumn colors. Make it fun and festive but not too scary.",
-      "startDate": "2024-10-15",
-      "endDate": "2024-11-03",
-      "branch": "halloween-2024"
+      "startDate": "2025-10-15",
+      "endDate": "2025-11-03",
+      "branch": "halloween-2025"
     },
     {
-      "id": "christmas-2024",
-      "name": "Christmas 2024",
+      "id": "christmas-2025",
+      "name": "Christmas 2025",
       "description": "Add festive Christmas decorations. Include snowflakes, Santa themes, winter colors (red, green, white). Keep it joyful and family-friendly.",
-      "startDate": "2024-12-15",
-      "endDate": "2024-12-27",
-      "branch": "christmas-2024",
+      "startDate": "2025-12-15",
+      "endDate": "2025-12-27",
+      "branch": "christmas-2025",
       "useEventColorPalette": true
     },
     {
       "id": "new-year-2025",
       "name": "New Year 2025",
       "description": "Celebrate the new year with fireworks, champagne glasses, and '2025' decorations. Use gold, silver, and sparkle effects.",
-      "startDate": "2024-12-27",
+      "startDate": "2025-12-27",
       "endDate": "2025-01-05",
       "branch": "new-year-2025"
     }

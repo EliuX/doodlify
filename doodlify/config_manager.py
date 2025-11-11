@@ -242,16 +242,6 @@ class ConfigManager:
         
         self.update_event_progress(event_id, **update_kwargs)
 
-    def update_event_analysis(self, event_id: str, analysis: AnalysisResult) -> None:
-        """Update analysis results for an event."""
-        event_lock = self.get_event_lock(event_id)
-        if not event_lock:
-            raise ValueError(f"Event not found: {event_id}")
-
-        event_lock.analysis = analysis
-        event_lock.progress.analyzed = True
-        self.save_lock()
-
     def update_global_analysis(self, analysis: AnalysisResult) -> None:
         """Update global analysis results."""
         if not self._lock:

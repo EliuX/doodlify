@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from .config_manager import ConfigManager
 from .orchestrator import Orchestrator
+from .agentic_orchestrator import AgenticOrchestrator
 
 
 # Load environment variables
@@ -28,6 +29,32 @@ def get_env_or_exit(var_name: str) -> str:
             f"Please set it in .env file or as environment variable", err=True)
         sys.exit(1)
     return value
+
+
+def create_orchestrator(config_path: str, agentic: bool):
+    """Create orchestrator instance based on mode."""
+    github_token = get_env_or_exit('GITHUB_PERSONAL_ACCESS_TOKEN')
+    openai_api_key = get_env_or_exit('OPENAI_API_KEY')
+    repo_name = get_env_or_exit('GITHUB_REPO_NAME')
+    
+    config_manager = ConfigManager(config_path=config_path)
+    
+    if agentic:
+        click.echo("🤖 Using Agentic Mode (Haystack + MCP)")
+        return AgenticOrchestrator(
+            config_manager=config_manager,
+            github_token=github_token,
+            openai_api_key=openai_api_key,
+            repo_name=repo_name,
+        )
+    else:
+        click.echo("⚙️  Using Imperative Mode (Classic)")
+        return Orchestrator(
+            config_manager=config_manager,
+            github_token=github_token,
+            openai_api_key=openai_api_key,
+            repo_name=repo_name,
+        )
 
 
 @click.group()
@@ -54,7 +81,13 @@ def cli():
     default=False,
     help='Report all suggestions (including those disabled in defaults.reportSuggestions)'
 )
-def analyze(config: str, report_all: bool):
+@click.option(
+    '--agentic',
+    is_flag=True,
+    default=False,
+    help='Use agentic mode (Haystack + MCP) instead of classic assistant mode'
+)
+def analyze(config: str, report_all: bool, agentic: bool):
     """
     Analyze the project and validate configuration.
 
@@ -62,23 +95,14 @@ def analyze(config: str, report_all: bool):
     and performs initial codebase analysis to identify files of interest.
     """
     try:
-        # Get environment variables
-        github_token = get_env_or_exit('GITHUB_PERSONAL_ACCESS_TOKEN')
-        openai_api_key = get_env_or_exit('OPENAI_API_KEY')
-        repo_name = get_env_or_exit('GITHUB_REPO_NAME')
-
-        # Initialize
-        config_manager = ConfigManager(config_path=config)
-        orchestrator = Orchestrator(
-            config_manager=config_manager,
-            github_token=github_token,
-            openai_api_key=openai_api_key,
-            repo_name=repo_name,
-            report_all_suggestions=report_all,
-        )
+        # Initialize orchestrator
+        orchestrator = create_orchestrator(config, agentic)
+        
+        if hasattr(orchestrator, 'report_all_suggestions'):
+            orchestrator.report_all_suggestions = report_all
 
         # Run analysis
-        success = orchestrator.analyze()
+        success = orchestrator.analyze(report_all=report_all) if agentic else orchestrator.analyze()
 
         if success:
             click.echo("\n✅ Analysis completed successfully!")
@@ -170,7 +194,13 @@ def restore(config: str, event_id: str, files: str):
     default=False,
     help='Force reprocess even if backups (.original) exist'
 )
-def process(config: str, event_id: Optional[str], only: Optional[str], force: bool):
+@click.option(
+    '--agentic',
+    is_flag=True,
+    default=False,
+    help='Use agentic mode (Haystack + MCP) instead of classic assistant mode'
+)
+def process(config: str, event_id: Optional[str], only: Optional[str], force: bool, agentic: bool):
     """
     Process all active unprocessed events.
 
@@ -179,19 +209,8 @@ def process(config: str, event_id: Optional[str], only: Optional[str], force: bo
     images and text files.
     """
     try:
-        # Get environment variables
-        github_token = get_env_or_exit('GITHUB_PERSONAL_ACCESS_TOKEN')
-        openai_api_key = get_env_or_exit('OPENAI_API_KEY')
-        repo_name = get_env_or_exit('GITHUB_REPO_NAME')
-
-        # Initialize
-        config_manager = ConfigManager(config_path=config)
-        orchestrator = Orchestrator(
-            config_manager=config_manager,
-            github_token=github_token,
-            openai_api_key=openai_api_key,
-            repo_name=repo_name,
-        )
+        # Initialize orchestrator
+        orchestrator = create_orchestrator(config, agentic)
 
         # Run processing
         only_list = None
@@ -218,7 +237,13 @@ def process(config: str, event_id: Optional[str], only: Optional[str], force: bo
     help='Path to configuration file',
     type=click.Path(exists=True)
 )
-def push(config: str):
+@click.option(
+    '--agentic',
+    is_flag=True,
+    default=False,
+    help='Use agentic mode (Haystack + MCP) instead of classic assistant mode'
+)
+def push(config: str, agentic: bool):
     """
     Push processed changes and create pull requests.
 
@@ -226,22 +251,14 @@ def push(config: str):
     creates pull requests for review.
     """
     try:
-        # Get environment variables
-        github_token = get_env_or_exit('GITHUB_PERSONAL_ACCESS_TOKEN')
-        openai_api_key = get_env_or_exit('OPENAI_API_KEY')
-        repo_name = get_env_or_exit('GITHUB_REPO_NAME')
+        # Initialize orchestrator
+        orchestrator = create_orchestrator(config, agentic)
 
-        # Initialize
-        config_manager = ConfigManager(config_path=config)
-        orchestrator = Orchestrator(
-            config_manager=config_manager,
-            github_token=github_token,
-            openai_api_key=openai_api_key,
-            repo_name=repo_name,
-        )
-
-        # Run push (async)
-        success = asyncio.run(orchestrator.push())
+        # Run push (async for classic, sync for agentic)
+        if agentic:
+            success = orchestrator.push()
+        else:
+            success = asyncio.run(orchestrator.push())
 
         if success:
             click.echo("\n✅ Push completed successfully!")

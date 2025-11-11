@@ -21,6 +21,98 @@ Doodlify is a Python CLI tool that automatically adapts frontend projects for sp
 - 🖼️ **Image Transformation**: Automatically generates event-themed variations of images
 - 🔒 **Safe Backups**: Creates backup copies of original files before modifications
 - 📊 **State Tracking**: Maintains processing state to avoid duplicate work
+- 🎭 **Two Execution Modes**: Choose between Assistant mode (predictable) or Agentic mode (autonomous)
+
+## 🎭 Assistant vs Agentic Modes
+
+Doodlify offers two distinct execution modes to suit different needs:
+
+### ⚙️ **Assistant Mode** (Default - Classic/Imperative)
+
+**AI as a tool** - You control the workflow, AI helps at each step.
+
+**How it works:**
+- Follows a **predetermined sequence** of operations
+- Calls AI for specific tasks (analyze, transform, adapt)
+- **Deterministic execution**: Same steps every time
+- Uses **direct GitHub REST API** calls
+- AI is **stateless** - no memory between operations
+
+**Think of it as:** Calling an API repeatedly - you decide what happens next.
+
+**Best for:**
+- Production deployments requiring predictability
+- Debugging and understanding exact execution flow
+- Environments without Docker
+- When you need full control over the process
+
+**Example workflow:**
+```python
+# Your code controls the flow:
+result1 = ai.analyze(repo)           # Step 1: Analyze
+result2 = ai.transform(images)       # Step 2: Transform
+result3 = ai.commit(changes)         # Step 3: Commit
+```
+
+### 🤖 **Agentic Mode** (Autonomous with Haystack + MCP)
+
+**AI as an autonomous decision-maker** - The agent decides what to do, when, and whether it's done.
+
+**How it works:**
+- Agent receives a **high-level mission** ("Transform this repo for Halloween")
+- **Autonomously decides** which tools to use and in what order
+- Can **adapt strategy** based on results and errors
+- Uses **Model Context Protocol (MCP)** for GitHub operations
+- Agent has **memory and context** across tool invocations
+- Decides **when the task is complete**
+
+**Think of it as:** Delegating to a smart teammate who figures out the steps themselves.
+
+**Best for:**
+- Complex workflows requiring dynamic decisions
+- Experimental/exploratory transformations
+- When you want the AI to handle edge cases autonomously
+- Learning how AI agents approach problems
+
+**Example workflow:**
+```python
+# Agent controls the flow:
+agent.run("Transform this repo for Halloween")
+# Agent internally:
+# - Should I analyze first? Yes
+# - What images need work? Let me check
+# - This transformation failed, let me retry differently
+# - Am I done? Let me assess progress
+```
+
+### Key Differences Summary
+
+| Aspect | Assistant Mode | Agentic Mode |
+|--------|---------------|-------------|
+| **Control** | You decide steps | AI decides steps |
+| **Execution** | Predetermined sequence | Dynamic adaptation |
+| **GitHub API** | Direct REST calls | MCP protocol |
+| **AI State** | Stateless per call | Maintains context |
+| **Error Handling** | Predefined logic | Autonomous retry/adapt |
+| **Completion** | Fixed workflow end | Agent decides when done |
+| **Dependencies** | Python + requests | Python + Haystack + Docker (for MCP) |
+| **Predictability** | High | Medium |
+| **Flexibility** | Medium | High |
+
+### Usage
+
+Add the `--agentic` flag to any command:
+
+```bash
+# Assistant mode (default)
+doodlify analyze
+doodlify process --event-id halloween-2024
+
+# Agentic mode
+doodlify analyze --agentic
+doodlify process --event-id halloween-2024 --agentic
+doodlify push --agentic
+```
 
 ## 🚀 Quick Start
 
@@ -564,6 +656,25 @@ If Docker is unavailable, install Node.js and the tool will use npx:
 ```bash
 npm install -g @modelcontextprotocol/server-github
 ```
+
+## ⚠️ Known Issues
+
+### Agentic Mode (Experimental)
+**Status**: Work in Progress - Not recommended for production use
+
+The agentic mode is currently experimental and has the following known issues:
+- **Multi-turn conversations**: Agent conversation flow with Haystack has edge cases where tool results aren't properly chained between turns
+- **File persistence**: Transformed images may not be saved to disk in all scenarios
+- **Limited tool coverage**: Only image transformation is implemented; CSS color changes and text adaptation need agent tools
+- **Debugging complexity**: Autonomous decision-making makes it harder to trace what went wrong
+
+**Recommendation**: Use **Assistant Mode** (default) for production workflows. It provides:
+- Deterministic, repeatable results
+- Better error messages and debugging
+- Full feature coverage (images, CSS, text, i18n)
+- Proven reliability in CI/CD environments
+
+Agentic mode development continues as an experimental feature for exploring autonomous AI workflows.
 
 ## 🤝 Contributing
 

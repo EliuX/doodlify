@@ -473,35 +473,20 @@ class Orchestrator:
                 # Using ad-hoc analysis; mark event as analyzed for status
                 self.config_manager.update_event_progress(event.id, analyzed=True)
             else:
-                analysis = event.analysis or self.config_manager.lock.global_analysis
+                # Use global analysis (shared across all events)
+                analysis = self.config_manager.lock.global_analysis if self.config_manager.lock else None
                 if not analysis:
-                    # Use excludes from prior lock's global analysis notes if provided
-                    try:
-                        prior_notes = (self.config_manager.lock.global_analysis.notes if self.config_manager.lock and self.config_manager.lock.global_analysis else {}) or {}
-                        excludes = list(prior_notes.get("excludes") or [])
-                    except Exception:
-                        excludes = []
-                    analysis_result = self.analyzer_agent.analyze_codebase(
-                        self.git_agent.repo_path,
-                        config.project.sources,
-                        config.defaults.selector,
-                        config.project.description,
-                        excludes=excludes,
-                    )
-                    # Persist excludes into notes for subsequent runs
-                    try:
-                        analysis_result.setdefault("notes", {})
-                        analysis_result["notes"]["excludes"] = excludes
-                    except Exception:
-                        pass
-                    analysis = AnalysisResult(**analysis_result)
-                    self.config_manager.update_event_analysis(event.id, analysis)
-                else:
-                    # Using cached analysis; mark as analyzed
-                    self.config_manager.update_event_progress(event.id, analyzed=True)
-            
+                    # No global analysis exists, need to run analyze phase first
+                    print("  ⚠️  No global analysis found. Run analyze phase first.")
+                    return False
+                
+                # Mark event as analyzed (using global analysis)
+                self.config_manager.update_event_progress(event.id, analyzed=True)
+
             # Select palette: event preset (if enabled) or analysis-derived palette
             selected_palette = self._select_palette(event, analysis)
+            if selected_palette:
+                print(f"\n🎨 Using color palette: {', '.join(selected_palette)}")
 
             # Transform theme colors first (primary/secondary) so pages and images align
             # Use AI-powered detection if useEventColorPalette is enabled
@@ -1018,16 +1003,24 @@ This automated customization includes:
         use_event = getattr(event, 'useEventColorPalette', None)
         if use_event is None:
             use_event = bool(getattr(cfg.defaults, 'useEventColorPalette', False))
+        
         name = (event.name or event.id or "").lower()
+        print(f"  🔍 Palette selection: use_event={use_event}, event_name='{name}'")
+        
         if use_event:
             # Very lightweight presets
             if "christmas" in name or "xmas" in name:
+                print(f"  ✓ Using Christmas preset palette")
                 return ["#C1121F", "#0B6E4F", "#FFFFFF", "#F7C948", "#125B50"]
             if "halloween" in name:
+                print(f"  ✓ Using Halloween preset palette")
                 return ["#FF7A00", "#1A1A1A", "#6B21A8", "#F97316", "#FDE047"]
             if "new year" in name or "new-year" in name:
+                print(f"  ✓ Using New Year preset palette")
                 return ["#D4AF37", "#C0C0C0", "#000000", "#FFFFFF", "#8B5CF6"]
+        
         # fallback to analysis palette
+        print(f"  ℹ️  Using analysis-derived palette")
         try:
             notes = getattr(analysis, 'notes', {}) or {}
             palette = list(notes.get('palette') or [])
@@ -1102,7 +1095,7 @@ This automated customization includes:
         modified: List[str] = []
         exts = {'.css', '.scss', '.sass', '.less'}
         
-        # Collect all style files
+        # Collect all style files (respect .gitignore)
         style_files = []
         for src in (sources or ['']):
             root = (self.git_agent.repo_path / src) if src else self.git_agent.repo_path
@@ -1110,8 +1103,14 @@ This automated customization includes:
                 continue
             for p in root.rglob('*'):
                 if p.suffix.lower() in exts and p.is_file():
-                    rel = str(p.relative_to(self.git_agent.repo_path))
-                    style_files.append((rel, p))
+                    # Skip files ignored by git (build artifacts)
+                    try:
+                        rel = str(p.relative_to(self.git_agent.repo_path))
+                        if self.git_agent.repo.ignored(rel):
+                            continue
+                        style_files.append((rel, p))
+                    except Exception:
+                        continue
         
         if not style_files:
             print("  ℹ️  No CSS/SCSS/SASS/LESS files found")
@@ -1172,7 +1171,7 @@ If no changes are needed, return {{"changes": []}}.
 """
                 
                 response = client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-5-mini",
                     messages=[
                         {"role": "system", "content": "You are an expert in CSS, SCSS, SASS, and LESS. You identify color-related code that should be modified for event themes."},
                         {"role": "user", "content": prompt}

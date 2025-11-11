@@ -453,7 +453,7 @@ class AnalyzerAgent:
         
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4",
+                model="gpt-5",
                 messages=[
                     {"role": "system", "content": "You are a code analysis expert. Respond ONLY with valid JSON."},
                     {"role": "user", "content": prompt}

@@ -1,3 +1,7 @@
+---
+trigger: always_on
+---
+
 # Doodlify - Windsurf Rules
 
 ## Tech Stack
@@ -33,6 +37,12 @@
 - Use `--verbose` / `--quiet` flags for output control
 - Support `--output json` for CI/CD integration
 - Validate inputs early with clear error messages
+
+### Documentation
+- Docs files are located in the root README.md and the md files in /docs
+- Every important architecture change, including additions and deletions should be updated in the documentation
+- The documentation should avoid duplications and long unnecessary explanations
+- When multiple content related to the documentation starts growing to around more than a 3rd of the overall information in that md file, then that specialized part of the documentation should have its own .md file.
 
 ### Exit Codes
 - `0` - Success

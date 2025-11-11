@@ -63,7 +63,7 @@ Adapted text:"""
         prompt = self.generate_adaptation_prompt(text, event_name, event_description, context)
         
         response = self.client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-5",
             messages=[
                 {"role": "system", "content": "You are a professional copywriter specializing in event-themed content."},
                 {"role": "user", "content": prompt}

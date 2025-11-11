@@ -2,11 +2,10 @@
 Git operations agent for local repository management.
 """
 
-import os
 import shutil
 from pathlib import Path
 from typing import Optional, List
-import git
+
 from git import Repo
 
 
@@ -186,19 +185,54 @@ class GitAgent:
             candidates.append(public_root / normalized)
         
         # 5) Fallback: attempt rglob by normalized subpath, then by filename
+        # Respect .gitignore patterns and prefer source files
+        def should_skip_path(path: Path) -> bool:
+            """Check if path should be skipped based on .gitignore patterns."""
+            try:
+                rel_path = path.relative_to(self.repo_path)
+                # Use GitPython to check if file is ignored
+                return self.repo.ignored(str(rel_path))
+            except Exception:
+                return False
+        
+        def is_preferred_source(path: Path) -> bool:
+            """Check if path is in a preferred source directory."""
+            path_str = str(path)
+            return 'src' in path_str or 'public' in path_str
+        
         try:
             # Exact subpath search (e.g., images/foo.png anywhere)
+            preferred = None
+            fallback = None
             for hit in self.repo_path.rglob(normalized):
-                if hit.is_file():
-                    return hit
+                if hit.is_file() and not should_skip_path(hit):
+                    if is_preferred_source(hit):
+                        preferred = hit
+                        break  # Found in preferred location
+                    elif not fallback:
+                        fallback = hit
+            if preferred:
+                return preferred
+            if fallback:
+                return fallback
         except Exception:
             pass
         try:
             # Filename-only search as last resort
             name = Path(normalized).name
+            preferred = None
+            fallback = None
             for hit in self.repo_path.rglob(name):
-                if hit.is_file():
-                    return hit
+                if hit.is_file() and not should_skip_path(hit):
+                    if is_preferred_source(hit):
+                        preferred = hit
+                        break  # Found in preferred location
+                    elif not fallback:
+                        fallback = hit
+            if preferred:
+                return preferred
+            if fallback:
+                return fallback
         except Exception:
             pass
 
